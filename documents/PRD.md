@@ -1,7 +1,7 @@
 # Product Requirement Document
 ## Sound Localization Test (SLT)
-**Version:** 1.2
-**Date:** 2026-04-13
+**Version:** 1.3
+**Date:** 2026-04-14
 **Author:** Claude (Anthropic) in collaboration with the project owner
 
 ---
@@ -103,7 +103,7 @@ A_right_speaker = sin(theta)
 
 ## 4. GUI Design
 
-Aesthetic: teal/cyan header banners, soft pink input fields, white panel backgrounds, light blue overall background, bold green Start button.
+Aesthetic: teal/cyan header banners, soft pink input fields, white panel backgrounds, light blue overall background, bold green Start button. All body text (labels, field text, instructions) is rendered in pure black (RGB [0 0 0]) for maximum legibility against the light panel backgrounds.
 
 ### 4.1 Intro GUI
 
@@ -119,18 +119,27 @@ Aesthetic: teal/cyan header banners, soft pink input fields, white panel backgro
 
 ### 4.2 Calibration Routine
 
-Cycles through speakers 1–6. For each: displays active channel, plays stimulus continuously, waits for "Next Speaker" click. Closes after Speaker 6.
+Cycles through speakers 1–6. For each: displays active channel, plays stimulus continuously, waits for button click to advance. Button label is dynamic:
+
+- **Speakers 1–5:** Button reads "Next Speaker". Clicking stops the current tone, advances to the next speaker, and starts the next tone.
+- **Speaker 6:** Once the tone begins playing through Speaker 6, the button label changes to "Done". Clicking "Done" stops audio and closes the Calibration GUI, returning control to the Intro GUI.
+
+All body text in the Calibration GUI is pure black for legibility.
 
 ### 4.3 Experiment Screen — Discrete Speakers Mode
 
 - Neutral/black background
+- Instruction text displayed prominently at the top: *"Press a number 1–6 or click a speaker button to indicate where you are perceiving the sound from."*
+- Speaker orientation diagram rendered in the main area: same hexagonal geometry as the Continuous Panning ring, with a top-down listener head icon at center (nose pointing toward Speaker 1 at 0°) and the six speaker positions arranged at 0°, 60°, 120°, 180°, 240°, 300°.
+- Each of the six speaker positions is rendered as a large, visually obvious clickable button labeled with its number (1–6). Buttons are noticeably larger than the speaker markers used in the Continuous Panning ring, since they are the primary interactive target in this mode.
 - Trial counter displayed
-- Listens for keypress 1–6; stops stimulus on keypress
+- Response capture accepts either a keypress (1–6) or a click on the corresponding speaker button — both are equivalent inputs. Stimulus stops on response.
 - Live countdown timer between trials
 
 ### 4.4 Experiment Screen — Continuous Panning Mode
 
 - Neutral/black background
+- Instruction text displayed prominently at the top: *"Click within the ring to indicate where you are perceiving the sound from."*
 - Trial counter displayed
 - Interactive circular ring (0–360°) for click response
 - Stops stimulus on click; records degree

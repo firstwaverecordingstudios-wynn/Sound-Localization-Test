@@ -1,0 +1,6 @@
+TrialNumber,StimulusLocation,Response,AngularError_deg,ResponseTime_s
+1,2,4,120,4.0861708
+2,3,3,0,0.5622853
+3,6,1,60,0.8390788
+4,2,5,180,1.1208128
+5,3,6,180,0.5093966

@@ -6,26 +6,8 @@
 % measures the listener's ability to localize the sound source.
 %
 % Author  : Claude (Anthropic) in collaboration with project owner
-% Date    : 2026-04-14
-% Version : 1.1
-%
-% Changelog:
-%   v1.1 (2026-04-14) — PRD v1.3 refinements:
-%     - Intro & Calibration GUIs: body text rendered pure black [0 0 0]
-%       for legibility (teal header + green Start button unchanged).
-%     - Calibration: advance button label is dynamic — "Next Speaker" for
-%       speakers 1–5, "Done" for speaker 6; "Done" click stops audio,
-%       releases device, and closes the window in one unified shutdown.
-%     - Experiment screen: single top instruction label (mode-specific text),
-%       figure widened to 760×640 px for both modes.
-%     - Discrete mode: hex speaker diagram with listener head icon and six
-%       large clickable speaker buttons (70×70 px) as an equivalent to
-%       keypress input. Click and keypress produce identical behaviour.
-%     - Continuous mode: in-axes instruction caption removed (now in top
-%       label); ring interaction unchanged.
-%     - drawListenerHeadIcon extracted as shared helper used by both the
-%       Discrete experiment diagram and the results heatmap.
-%   v1.0 (2026-04-13) — Initial implementation.
+% Date    : 2026-04-13
+% Version : 1.0
 %
 % Folder structure:
 %   Sound Localization Test/
@@ -89,10 +71,6 @@ uilabel(hdrPanel, ...
     'FontSize',            18, 'FontWeight', 'bold', 'FontColor', [1 1 1]);
 
 % ── Parameter input panel ─────────────────────────────────────────────────
-% Body text in Intro GUI is pure black for maximum legibility against
-% the white panel and pink input fields (PRD v1.3 §4 preamble).
-bodyColor = [0 0 0];
-
 inputPanel = uipanel(fig, ...
     'Position',        [20 110 480 250], ...
     'BackgroundColor', [1 1 1], ...
@@ -101,49 +79,44 @@ inputPanel = uipanel(fig, ...
 
 % Stimulus Selection
 uilabel(inputPanel, 'Text', 'Stimulus:', ...
-    'Position', [20 200 120 22], 'FontSize', 12, 'FontColor', bodyColor);
+    'Position', [20 200 120 22], 'FontSize', 12);
 stimItems = {'125 Hz','250 Hz','500 Hz','750 Hz','1000 Hz','Gaussian Noise'};
 dd_stim = uidropdown(inputPanel, ...
     'Items',           stimItems, ...
     'Position',        [150 198 200 26], ...
-    'BackgroundColor', [0.98 0.84 0.84], ...
-    'FontColor',       bodyColor);   % soft pink field, black text
+    'BackgroundColor', [0.98 0.84 0.84]);   % soft pink
 
 % Number of Trials
 uilabel(inputPanel, 'Text', 'Number of trials:', ...
-    'Position', [20 158 130 22], 'FontSize', 12, 'FontColor', bodyColor);
+    'Position', [20 158 130 22], 'FontSize', 12);
 ef_trials = uieditfield(inputPanel, 'numeric', ...
     'Value',           20, ...
     'Position',        [150 156 80 26], ...
-    'BackgroundColor', [0.98 0.84 0.84], ...
-    'FontColor',       bodyColor);
+    'BackgroundColor', [0.98 0.84 0.84]);
 
 % Pause Time
 uilabel(inputPanel, 'Text', 'Pause time (s):', ...
-    'Position', [20 116 130 22], 'FontSize', 12, 'FontColor', bodyColor);
+    'Position', [20 116 130 22], 'FontSize', 12);
 ef_pause = uieditfield(inputPanel, 'numeric', ...
     'Value',           2, ...
     'Position',        [150 114 80 26], ...
-    'BackgroundColor', [0.98 0.84 0.84], ...
-    'FontColor',       bodyColor);
+    'BackgroundColor', [0.98 0.84 0.84]);
 
 % Mode Selection
 uilabel(inputPanel, 'Text', 'Mode:', ...
-    'Position', [20 74 120 22], 'FontSize', 12, 'FontColor', bodyColor);
+    'Position', [20 74 120 22], 'FontSize', 12);
 dd_mode = uidropdown(inputPanel, ...
     'Items',           {'Discrete Speakers','Continuous Panning'}, ...
     'Position',        [150 72 200 26], ...
-    'BackgroundColor', [0.98 0.84 0.84], ...
-    'FontColor',       bodyColor);
+    'BackgroundColor', [0.98 0.84 0.84]);
 
 % Description (used as figure subheader in results)
 uilabel(inputPanel, 'Text', 'Description:', ...
-    'Position', [20 32 120 22], 'FontSize', 12, 'FontColor', bodyColor);
+    'Position', [20 32 120 22], 'FontSize', 12);
 ef_desc = uieditfield(inputPanel, 'text', ...
     'Value',           '', ...
     'Position',        [150 30 290 26], ...
-    'BackgroundColor', [0.98 0.84 0.84], ...
-    'FontColor',       bodyColor);
+    'BackgroundColor', [0.98 0.84 0.84]);
 
 % ── Buttons ───────────────────────────────────────────────────────────────
 uibutton(fig, ...
@@ -159,7 +132,6 @@ uibutton(fig, ...
     'Position',        [130 55 90 38], ...
     'FontSize',        12, ...
     'BackgroundColor', [0.93 0.93 0.93], ...
-    'FontColor',       bodyColor, ...
     'ButtonPushedFcn', @(~,~) onCalibratePressed());
 
 % ── Callbacks ─────────────────────────────────────────────────────────────
@@ -241,10 +213,6 @@ function runCalibration(CFG, params)
 
 loopBuf = buildLoopBuffer(CFG, params.stimIndex);
 
-% Body text in Calibration GUI is pure black for legibility (PRD v1.3 §4.2).
-% Header banner text (white on teal) is unchanged.
-bodyColor = [0 0 0];
-
 % ── Calibration window ────────────────────────────────────────────────────
 calFig = uifigure('Name', 'Calibration', ...
     'Position', [250 250 400 260], ...
@@ -262,14 +230,12 @@ lbl_speaker = uilabel(calFig, ...
     'Text',                '', ...
     'Position',            [30 130 340 50], ...
     'HorizontalAlignment', 'center', ...
-    'FontSize',            18, 'FontWeight', 'bold', ...
-    'FontColor',           bodyColor);
+    'FontSize',            18, 'FontWeight', 'bold');
 
 uilabel(calFig, ...
     'Text',                'Adjust volume, then click Next Speaker.', ...
     'Position',            [30 95 340 28], ...
-    'HorizontalAlignment', 'center', 'FontSize', 11, ...
-    'FontColor',           bodyColor);
+    'HorizontalAlignment', 'center', 'FontSize', 11);
 
 nextDone = false;
 btn_next = uibutton(calFig, ...
@@ -284,15 +250,6 @@ btn_next = uibutton(calFig, ...
 [aPR, deviceOK] = tryOpenAudio(CFG);
 
 for spk = 1:CFG.numChannels
-    % Dynamic button label: "Next Speaker" for speakers 1–5; at the top of
-    % the Speaker 6 iteration (before playback begins) flip it to "Done"
-    % so the user sees the terminal label for the entire final tone.
-    if spk < CFG.numChannels
-        btn_next.Text = 'Next Speaker';
-    else
-        btn_next.Text = 'Done';
-    end
-
     nextDone = false;
     lbl_speaker.Text = sprintf('Speaker %d  —  Channel %d  (%.0f°)', ...
         spk, spk, CFG.speakerAngles(spk));
@@ -315,11 +272,10 @@ end
 
 if deviceOK, release(aPR); end
 
-% Unified shutdown path. Whether the user clicked "Done" on Speaker 6 or
-% closed the window manually mid-sequence, we arrive here with audio
-% already stopped (inside the loop). Close the figure if it's still open.
 if isvalid(calFig)
-    close(calFig);
+    btn_next.Text    = 'Done';
+    lbl_speaker.Text = 'Calibration complete.';
+    waitfor(calFig);
 end
 end % runCalibration
 
@@ -343,59 +299,34 @@ loopBuf = buildLoopBuffer(CFG, params.stimIndex);
 
 [aPR, deviceOK] = tryOpenAudio(CFG);
 
-% ── Experiment window (near-black, minimal distraction) ───────────────
+% ── Experiment window (near-black, minimal distraction) ───────────────────
 expFig = uifigure('Name', 'Sound Localization Test', ...
-    'Position', [100 100 760 640], ...
+    'Position', [100 100 700 550], ...
     'Color',    [0.05 0.05 0.05], ...
     'Resize',   'off');
 
-% Single sink for response data. Both keypress handlers and Discrete-mode
-% speaker-button callbacks write here; the waitForDiscreteResponse /
-% waitForRingClick poll loops read from it. Using one field prevents
-% keypress-vs-click races.
-expFig.UserData.response = [];
-
-% Mode-specific top instruction (PRD v1.3 §4.3 / §4.4).
-if isDiscrete
-    instrText = ['Press a number 1–6 or click a speaker button ' ...
-                 'to indicate where you are perceiving the sound from.'];
-else
-    instrText = ['Click within the ring to indicate where you are ' ...
-                 'perceiving the sound from.'];
-end
-
-uilabel(expFig, ...
-    'Text',                instrText, ...
-    'Position',            [20 585 720 40], ...
-    'HorizontalAlignment', 'center', ...
-    'FontSize',            13, 'FontWeight', 'bold', ...
-    'FontColor',           [1 1 1]);
-
 lbl_trial = uilabel(expFig, ...
     'Text',                '', ...
-    'Position',            [0 550 760 30], ...
+    'Position',            [0 490 700 40], ...
     'HorizontalAlignment', 'center', ...
     'FontSize',            14, 'FontColor', [0.85 0.85 0.85]);
 
 lbl_countdown = uilabel(expFig, ...
     'Text',                '', ...
-    'Position',            [0 520 760 28], ...
+    'Position',            [0 440 700 40], ...
     'HorizontalAlignment', 'center', ...
     'FontSize',            13, 'FontColor', [0.65 0.65 0.65]);
 
-% Main diagram axes — unified geometry for both modes. Discrete uses
-% it for the hex speaker diagram + buttons; Continuous uses it for the
-% clickable response ring. 500×450 px centred in the 760-wide window.
-ax = uiaxes(expFig, ...
-    'Position', [130 40 500 450], ...
-    'Color',    [0.05 0.05 0.05], ...
-    'XColor',   'none', 'YColor', 'none');
-ax.Toolbar.Visible = 'off';
-
-if isDiscrete
-    speakerBtns = buildDiscreteSpeakerDiagram(ax, expFig, CFG);  %#ok<NASGU>
-else
+% Continuous mode: draw response ring in axes
+if ~isDiscrete
+    ax = uiaxes(expFig, ...
+        'Position', [150 80 400 380], ...
+        'Color',    [0.05 0.05 0.05], ...
+        'XColor',   'none', 'YColor', 'none');
+    ax.Toolbar.Visible = 'off';
     buildResponseRing(ax, CFG);
+else
+    ax = [];
 end
 
 % ── Trial loop ────────────────────────────────────────────────────────────
@@ -426,7 +357,7 @@ for t = 1:nTrials
 
     % Collect listener response
     if isDiscrete
-        response = waitForDiscreteResponse(expFig);
+        response = waitForKeyResponse(expFig);
     else
         response = waitForRingClick(ax, expFig);
     end
@@ -475,39 +406,28 @@ end % selectStimulusLocation
 
 
 % ─────────────────────────────────────────────────────────────────────────
-function response = waitForDiscreteResponse(fig)
-% Blocks until the listener either:
-%   (a) presses a key in the range 1–6, OR
-%   (b) clicks one of the six large speaker buttons on the Discrete diagram.
-% Returns the integer speaker number indicated.
-%
-% Both input paths write to fig.UserData.response, so whichever event fires
-% first wins — clicks and keypresses cannot race each other.
+function response = waitForKeyResponse(fig)
+% Blocks until the listener presses a key in the range 1–6.
+% Returns the integer speaker number pressed.
 %
 % Uses the figure's KeyPressFcn to capture keypresses without polling
 % the keyboard directly, keeping CPU usage low during the wait.
 
-fig.UserData.response = [];
+response = 0;
 fig.KeyPressFcn = @captureKey;
 
     function captureKey(~, evt)
         k = str2double(evt.Key);
         if ~isnan(k) && k >= 1 && k <= 6
-            fig.UserData.response = k;
+            response = k;
         end
     end
 
-while isempty(fig.UserData.response) && isvalid(fig)
+while response == 0 && isvalid(fig)
     pause(0.02);
 end
-
-if isvalid(fig)
-    response = fig.UserData.response;
-    fig.KeyPressFcn = '';
-else
-    response = 1;   % figure was closed; return a benign default
-end
-end % waitForDiscreteResponse
+fig.KeyPressFcn = '';
+end % waitForKeyResponse
 
 
 % ─────────────────────────────────────────────────────────────────────────
@@ -576,9 +496,10 @@ end
 % Centre crosshair
 plot(ax, 0, 0, '+', 'Color', [0.7 0.7 0.7], 'MarkerSize', 8, 'LineWidth', 1);
 
-% Instruction text now lives in the top label of the experiment figure
-% (see runExperiment) so that Discrete and Continuous modes share a
-% single consistent instruction surface.
+% Instruction text
+text(ax, 0, -1.45, 'Click the ring to indicate where you heard the sound', ...
+    'HorizontalAlignment', 'center', ...
+    'FontSize', 9, 'Color', [0.60 0.60 0.60]);
 
 hold(ax, 'off');
 end % buildResponseRing
@@ -1020,14 +941,31 @@ plot(ax, R*sin(theta), R*cos(theta), 'k-', 'LineWidth', 0.8);
 ri = 0.32;                                           % clear zone radius
 hT = linspace(0, 2*pi, 61);
 
-% Clear inner zone so the head icon sits on a white disc rather than on
-% the coloured wedges behind it.
+% Clear inner zone
 fill(ax, ri*cos(hT), ri*sin(hT), [1 1 1], ...
     'EdgeColor', [0.75 0.75 0.75], 'LineWidth', 0.5);
 
-% Listener head (shared with the Discrete experiment diagram so both
-% views have matching orientation cues). Nose points toward 0°.
-drawListenerHeadIcon(ax);
+% Head circle
+hR = 0.15;
+fill(ax, hR*cos(hT), hR*sin(hT), [0.92 0.92 0.92], ...
+    'EdgeColor', [0.35 0.35 0.35], 'LineWidth', 1.0);
+
+% Eyes
+eT = linspace(0, 2*pi, 21);
+eR = 0.022;
+fill(ax, -0.055+eR*cos(eT),  0.065+eR*sin(eT), [0.25 0.25 0.25], 'EdgeColor', 'none');
+fill(ax,  0.055+eR*cos(eT),  0.065+eR*sin(eT), [0.25 0.25 0.25], 'EdgeColor', 'none');
+
+% Ears
+eaT = linspace(0, 2*pi, 21); eaW = 0.030; eaH = 0.048;
+fill(ax, -0.170+eaW*cos(eaT), 0.025+eaH*sin(eaT), [0.92 0.92 0.92], ...
+    'EdgeColor', [0.35 0.35 0.35], 'LineWidth', 0.7);
+fill(ax,  0.170+eaW*cos(eaT), 0.025+eaH*sin(eaT), [0.92 0.92 0.92], ...
+    'EdgeColor', [0.35 0.35 0.35], 'LineWidth', 0.7);
+
+% Nose triangle — points upward toward 0° (Speaker 1 / front)
+fill(ax, [-0.03  0.03  0.00 -0.03], [0.115 0.115 0.175 0.115], ...
+    [0.35 0.35 0.35], 'EdgeColor', 'none');
 
 % ── Labels and tick marks ─────────────────────────────────────────────────
 rLab  = 1.22;
@@ -1122,137 +1060,3 @@ px     = [cx,  cx + R*sin(angles),  cx];
 py     = [cy,  cy + R*cos(angles),  cy];
 fill(ax, px, py, faceColor, 'EdgeColor', [1 1 1], 'LineWidth', 1.0);
 end % fillWedge
-
-
-% ────────────────────────────────────────────────────────────────────────
-function drawListenerHeadIcon(ax)
-% Draws a top-down schematic of a listener's head centred at (0,0) on ax.
-% Used by both the results heatmap and the Discrete-mode experiment
-% diagram so the subject sees a consistent orientation reference.
-%
-% Geometry conventions (axes data units, outer ring at R = 1.0):
-%   Head radius           : 0.15
-%   Eyes                  : two small dark discs slightly forward of centre
-%   Ears                  : two flattened ovals on the sides
-%   Nose                  : small triangle pointing UP toward 0° (Speaker 1)
-%
-% Note: In this figure 0° is the +y direction (top), so "forward" for the
-% listener is +y. Eye/ear/nose positions are expressed in that frame.
-
-% Head circle
-hT = linspace(0, 2*pi, 61);
-hR = 0.15;
-fill(ax, hR*cos(hT), hR*sin(hT), [0.92 0.92 0.92], ...
-    'EdgeColor', [0.35 0.35 0.35], 'LineWidth', 1.0);
-
-% Eyes (small dark discs, slightly forward of head centre)
-eT = linspace(0, 2*pi, 21);
-eR = 0.022;
-fill(ax, -0.055+eR*cos(eT),  0.065+eR*sin(eT), [0.25 0.25 0.25], 'EdgeColor', 'none');
-fill(ax,  0.055+eR*cos(eT),  0.065+eR*sin(eT), [0.25 0.25 0.25], 'EdgeColor', 'none');
-
-% Ears (flattened ovals on left/right)
-eaT = linspace(0, 2*pi, 21); eaW = 0.030; eaH = 0.048;
-fill(ax, -0.170+eaW*cos(eaT), 0.025+eaH*sin(eaT), [0.92 0.92 0.92], ...
-    'EdgeColor', [0.35 0.35 0.35], 'LineWidth', 0.7);
-fill(ax,  0.170+eaW*cos(eaT), 0.025+eaH*sin(eaT), [0.92 0.92 0.92], ...
-    'EdgeColor', [0.35 0.35 0.35], 'LineWidth', 0.7);
-
-% Nose triangle — points upward toward 0° (Speaker 1 / front)
-fill(ax, [-0.03  0.03  0.00 -0.03], [0.115 0.115 0.175 0.115], ...
-    [0.35 0.35 0.35], 'EdgeColor', 'none');
-end % drawListenerHeadIcon
-
-
-% ────────────────────────────────────────────────────────────────────────
-function btns = buildDiscreteSpeakerDiagram(ax, fig, CFG)
-% Builds the Discrete-mode experiment diagram: outer hex circle, six
-% sector divider lines, centred listener head icon, and six LARGE
-% clickable speaker buttons placed around the outside of the circle.
-%
-% Returns the 1×6 vector of button handles (so callers can keep them
-% alive / inspect them; currently unused downstream but useful for tests).
-%
-% Geometry:
-%   Outer ring radius (axes data units) : R = 1.0
-%   Button placement radius             : rBtn = 1.15 (clear of ring)
-%   Button size (pixels)                : 70 × 70 (PRD v1.3 §4.3 — the
-%                                         buttons are the primary target,
-%                                         so noticeably larger than the
-%                                         markers on the Continuous ring)
-%
-% Buttons cannot be children of a uiaxes in MATLAB, so each button is
-% parented to the figure and positioned in figure-pixel coordinates
-% using a small axes-data → figure-pixel mapper. The caller is expected
-% to leave the axes size fixed after this function returns (expFig is
-% already set to Resize='off', so this is safe).
-
-hold(ax, 'on');
-axis(ax, 'equal');
-xlim(ax, [-1.5 1.5]);
-ylim(ax, [-1.5 1.5]);
-
-% Outer ring
-R     = 1.0;
-theta = linspace(0, 2*pi, 361);
-plot(ax, R*sin(theta), R*cos(theta), '-', ...
-    'Color', [0.5 0.7 0.9], 'LineWidth', 1.5);
-
-% Six sector divider lines (radial), drawn at 30°, 90°, 150°, 210°, 270°,
-% 330° — the boundaries BETWEEN speakers. This makes the hex geometry
-% visually obvious and matches the sector scheme used by the panning law.
-for dividerDeg = 30:60:330
-    rad = dividerDeg * pi / 180;
-    plot(ax, [0 R*sin(rad)], [0 R*cos(rad)], ...
-        '-', 'Color', [0.25 0.35 0.45], 'LineWidth', 0.8);
-end
-
-% Listener head at centre
-drawListenerHeadIcon(ax);
-
-hold(ax, 'off');
-
-% ── Place six large clickable speaker buttons ───────────────────────────
-% Compute the axes' figure-pixel extents once, then map each speaker's
-% axes-data coordinate (rBtn*sin(rad), rBtn*cos(rad)) to figure pixels.
-axPos   = ax.Position;                   % [x y w h] in figure pixels
-xLim    = ax.XLim;  yLim = ax.YLim;
-xScale  = axPos(3) / (xLim(2) - xLim(1));
-yScale  = axPos(4) / (yLim(2) - yLim(1));
-axData2FigPx = @(dx,dy) [ ...
-    axPos(1) + (dx - xLim(1)) * xScale, ...
-    axPos(2) + (dy - yLim(1)) * yScale ];
-
-rBtn   = 1.15;
-btnSz  = 70;      % px, square
-btns   = gobjects(1, CFG.numChannels);
-
-for s = 1:CFG.numChannels
-    rad     = CFG.speakerAngles(s) * pi / 180;
-    centrePx = axData2FigPx(rBtn*sin(rad), rBtn*cos(rad));
-    btnPos  = [centrePx(1)-btnSz/2, centrePx(2)-btnSz/2, btnSz, btnSz];
-
-    btns(s) = uibutton(fig, ...
-        'Text',            sprintf('%d', s), ...
-        'Position',        btnPos, ...
-        'FontSize',        24, 'FontWeight', 'bold', ...
-        'BackgroundColor', [0.18 0.25 0.32], ...   % dark slate
-        'FontColor',       [1 1 1], ...
-        'ButtonPushedFcn', makeBtnCallback(fig, s));
-end
-end % buildDiscreteSpeakerDiagram
-
-
-% ────────────────────────────────────────────────────────────────────────
-function cb = makeBtnCallback(fig, speakerIdx)
-% Helper factory that closes over speakerIdx — needed because MATLAB
-% anonymous functions in a loop would otherwise all capture the final
-% value of the loop variable.
-cb = @(~,~) assignResponse(fig, speakerIdx);
-end % makeBtnCallback
-
-function assignResponse(fig, val)
-if isvalid(fig)
-    fig.UserData.response = val;
-end
-end % assignResponse

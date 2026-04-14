@@ -1,6 +1,6 @@
 # TASKS — Sound Localization Test (SLT)
-**Version:** 1.2
-**Date:** 2026-04-13
+**Version:** 1.3
+**Date:** 2026-04-14
 
 All tasks must be completed in order. No task may begin before its predecessor is complete and verified.
 
@@ -97,6 +97,45 @@ All tasks must be completed in order. No task may begin before its predecessor i
 - [ ] **8.10** Verify CSV output format and file naming.
 - [ ] **8.11** Verify figure output: both heatmaps saved with correct titles and description subheaders.
 - [ ] **8.12** Verify audio cleanup: no hanging audio processes after experiment completes or is interrupted.
+
+---
+
+---
+
+## Section 9 — Refinement Revisions (PRD v1.3, 2026-04-14)
+
+These tasks update the already-implemented SLT.m to match PRD v1.3. All code changes require user approval before execution.
+
+### 9.1 — Font legibility (Intro GUI & Calibration GUI)
+
+- [x] **9.1.1** Audit all text elements (labels, field text, instructions, button captions that are not on the green Start button or teal header banner) in the Intro GUI; set `FontColor` / `ForegroundColor` to pure black [0 0 0].
+- [x] **9.1.2** Audit all text elements in the Calibration GUI; set to pure black [0 0 0]. Header banner text unchanged.
+
+### 9.2 — Calibration "Done" button
+
+- [x] **9.2.1** Modify the calibration routine so that the advance button's label is dynamic: reads "Next Speaker" while speakers 1–5 are active; changes to "Done" at the moment Speaker 6 playback begins (i.e., after the click on Speaker 5's "Next Speaker").
+- [x] **9.2.2** Implement the "Done" click callback: stop audio on the active device, release the device handle, and close the Calibration GUI figure. Control returns to the Intro GUI.
+- [ ] **9.2.3** Verify that clicking "Done" during Speaker 6 playback leaves no hanging audio stream and no orphaned figure handle.
+
+### 9.3 — Discrete Speakers experiment screen redesign
+
+- [x] **9.3.1** Add an instruction text element at the top of the Discrete experiment figure: *"Press a number 1–6 or click a speaker button to indicate where you are perceiving the sound from."* Font color white (against black background), prominent size.
+- [x] **9.3.2** Render the hexagonal speaker orientation diagram in the main area, reusing the geometry helpers from the Continuous Panning ring and the listener head icon (nose toward 0°).
+- [x] **9.3.3** Replace the six passive speaker markers with **large clickable buttons** at each of the six speaker angles (0°, 60°, 120°, 180°, 240°, 300°). Buttons labeled "1" through "6". Sizing: noticeably larger than the Continuous ring's speaker markers — they are the primary interactive target.
+- [x] **9.3.4** Wire each button's click callback to the same response-capture path used by the keypress handler for the corresponding speaker number, so click and keypress produce identical behavior (record response, stop audio, advance).
+- [x] **9.3.5** Retain the existing trial counter and inter-trial countdown timer.
+
+### 9.4 — Continuous Panning instruction text
+
+- [x] **9.4.1** Add an instruction text element at the top of the Continuous experiment figure: *"Click within the ring to indicate where you are perceiving the sound from."* Matching style to the Discrete screen's instruction text.
+
+### 9.5 — Verification
+
+- [ ] **9.5.1** Launch Intro GUI; visually confirm all labels/inputs are pure-black and legible.
+- [ ] **9.5.2** Launch Calibrate; cycle through all six speakers. Confirm button label changes to "Done" on Speaker 6, and that clicking "Done" stops audio and closes the window.
+- [ ] **9.5.3** Run a short Discrete session. Confirm instruction text is visible, speaker buttons are large and obvious, and both keypress and click produce identical, correct responses.
+- [ ] **9.5.4** Run a short Continuous session. Confirm instruction text is visible and ring interaction still works as before.
+- [ ] **9.5.5** Re-run offline test suite (Tests 1–8 from LOG.md 2026-04-13) to confirm no regressions in acoustic logic.
 
 ---
 
