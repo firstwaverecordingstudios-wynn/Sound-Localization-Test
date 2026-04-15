@@ -6,29 +6,10 @@
 % measures the listener's ability to localize the sound source.
 %
 % Author  : Claude (Anthropic) in collaboration with project owner
-% Date    : 2026-04-15
-% Version : 1.3
+% Date    : 2026-04-14
+% Version : 1.1
 %
 % Changelog:
-%   v1.3 (2026-04-15) — ASIO device support:
-%     - tryOpenAudio now enumerates devices via
-%       getAudioDevices(audioPlayerRecorder) instead of audiodevinfo,
-%       which only sees Windows MME/DirectSound drivers. The new path
-%       sees ASIO devices (e.g. "Focusrite USB ASIO") that expose all
-%       hardware output channels, not just the Windows-default stereo
-%       pair. ASIO devices are preferred when present; non-default
-%       devices are the fallback; silent mode is the last resort.
-%   v1.2 (2026-04-15) — PRD v1.4 stats display & export:
-%     - drawCircularHeatmap now accepts a stats struct (accuracy, meanErr,
-%       meanRT) and renders a third text line below the description
-%       subtitle. Continuous mode omits the accuracy field.
-%     - showResults bundles stats into a struct and passes to both
-%       heatmap calls (error + RT).
-%     - CSV output replaced with a manual fprintf sequence: a #-prefixed
-%       header comment block (subject, date, stimulus, mode, description,
-%       and summary stats) is written before the column header and trial
-%       data rows. Round-trips cleanly via
-%       readtable(path, 'CommentStyle', '#').
 %   v1.1 (2026-04-14) — PRD v1.3 refinements:
 %     - Intro & Calibration GUIs: body text rendered pure black [0 0 0]
 %       for legibility (teal header + green Start button unchanged).
@@ -778,54 +759,40 @@ function [aPR, deviceOK] = tryOpenAudio(CFG)
 % Attempts to open a multi-channel audio output device via
 % audioPlayerRecorder. If no suitable device is found, returns
 % deviceOK = false so the experiment can run in silent (UI-test) mode.
-%
-% DEVICE ENUMERATION: We use getAudioDevices(audioPlayerRecorder) rather
-% than the legacy audiodevinfo, because audiodevinfo only sees devices
-% exposed via Windows MME/DirectSound/WASAPI — which typically caps the
-% Focusrite (and similar pro interfaces) at the 2-channel default-pair
-% face the OS shows. getAudioDevices sees ASIO devices, which expose all
-% hardware output channels.
-%
-% SELECTION POLICY: Prefer any device whose name contains "ASIO" (case-
-% insensitive). If none, fall back to the first non-"Default" device.
-% If still none, run in silent mode. Channel-count is not pre-checked
-% because getAudioDevices does not report per-device channel counts;
-% instead we attempt the construction with PlayerChannelMapping = 1:6
-% and let the constructor throw if the device cannot supply that many
-% channels — caught below and degraded to silent mode.
 
 deviceOK = false;
 aPR      = [];
 
 try
-    devNames = getAudioDevices(audioPlayerRecorder);
-    if isempty(devNames)
+    info = audiodevinfo;
+    if isempty(info.output)
         warning('SLT:noAudio', ...
             'No audio output device found — running in silent mode.');
         return;
     end
 
-    % Prefer ASIO; otherwise first non-Default; otherwise nothing.
-    isAsio  = contains(devNames, 'ASIO', 'IgnoreCase', true);
-    isDflt  = strcmpi(devNames, 'Default');
-    if any(isAsio)
-        devName = devNames{find(isAsio, 1)};
-    elseif any(~isDflt)
-        devName = devNames{find(~isDflt, 1)};
-    else
+    % Find first output device with at least 6 channels
+    devID = -1;
+    for i = 1:length(info.output)
+        if info.output(i).MaxOutputChannels >= CFG.numChannels
+            devID = info.output(i).ID;
+            break;
+        end
+    end
+
+    if devID < 0
         warning('SLT:noAudio', ...
-            'Only the "Default" device is available — it is unlikely to support %d channels. Running in silent mode.', ...
+            'No %d-channel output device found — running in silent mode.', ...
             CFG.numChannels);
         return;
     end
 
+    devName = audiodevinfo(0, devID, 'Name');
     aPR = audioPlayerRecorder( ...
-        'SampleRate',           CFG.sampleRate, ...
-        'Device',               devName, ...
+        'SampleRate',          CFG.sampleRate, ...
+        'Device',              devName, ...
         'PlayerChannelMapping', 1:CFG.numChannels);
     deviceOK = true;
-    fprintf('SLT: opened audio device "%s" with %d output channels.\n', ...
-        devName, CFG.numChannels);
 
 catch ME
     warning('SLT:noAudio', 'Audio init failed: %s', ME.message);
@@ -910,14 +877,6 @@ else
     accuracy = NaN;
 end
 
-% Bundle into a stats struct so drawCircularHeatmap can render the third
-% subtitle line and the CSV header block below can pull from one source.
-% Continuous mode passes accuracy = NaN; the heatmap and CSV writer both
-% interpret NaN as "omit this field" rather than printing it.
-stats.accuracy = accuracy;
-stats.meanErr  = meanErr;
-stats.meanRT   = meanRT;
-
 % ── Per-location aggregates for heatmaps ─────────────────────────────────
 if isDiscrete
     % Accumulate by speaker index (1–6)
@@ -936,57 +895,18 @@ end
 sessionPath = fullfile(CFG.resultsDir, params.sessionName);
 
 fig_err = drawCircularHeatmap(errPerBin, isDiscrete, 'Angular Error (°)', ...
-    params.description, CFG, params.stimLabel, stats);
+    params.description, CFG, params.stimLabel);
 saveas(fig_err, [sessionPath '_heatmap_error.png']);
 
 fig_rt = drawCircularHeatmap(rtPerBin, isDiscrete, 'Response Time (s)', ...
-    params.description, CFG, params.stimLabel, stats);
+    params.description, CFG, params.stimLabel);
 saveas(fig_rt, [sessionPath '_heatmap_RT.png']);
 
 % ── Save CSV ──────────────────────────────────────────────────────────────
-% PRD v1.4 §6.3 — the per-trial CSV is preceded by a #-prefixed header
-% block carrying session metadata and summary stats. The # prefix is the
-% conventional CSV comment marker: Excel tolerates the lines (they appear
-% in column A as malformed rows but do not interfere with the data table)
-% and MATLAB's readtable(…, 'CommentStyle', '#') skips them cleanly so
-% the data round-trips without preprocessing.
-%
-% writetable cannot prepend comment lines, so we open the file directly
-% with fopen and write everything via fprintf in one pass.
-
-csvPath = [sessionPath '.csv'];
-fid = fopen(csvPath, 'w');
-if fid == -1
-    warning('SLT:csvOpen', 'Could not open %s for writing.', csvPath);
-else
-    % --- Header comment block ------------------------------------------
-    fprintf(fid, '# Sound Localization Test - Session Results\n');
-    fprintf(fid, '# Subject: %s\n', params.subjectID);
-    fprintf(fid, '# Date: %s\n', char(datetime('now', ...
-        'Format', 'yyyy-MM-dd HH:mm:ss')));
-    fprintf(fid, '# Stimulus: %s\n', params.stimLabel);
-    fprintf(fid, '# Mode: %s\n', params.mode);
-    fprintf(fid, '# Description: %s\n', params.description);
-    if isDiscrete
-        % Accuracy is undefined for Continuous (no "correct" speaker for
-        % a panned virtual position), so the line is omitted entirely
-        % rather than printed as NaN — keeps the header clean.
-        fprintf(fid, '# Accuracy: %.1f%%\n', stats.accuracy);
-    end
-    fprintf(fid, '# Mean Angular Error: %.1f deg\n', stats.meanErr);
-    fprintf(fid, '# Mean Response Time: %.2f s\n', stats.meanRT);
-
-    % --- Column header + data rows -------------------------------------
-    fprintf(fid, ['TrialNumber,StimulusLocation,Response,' ...
-                  'AngularError_deg,ResponseTime_s\n']);
-    for r = 1:size(trialData, 1)
-        % Columns: trialNum, stimLoc, response, angErr, respTime
-        fprintf(fid, '%d,%d,%d,%.4f,%.4f\n', ...
-            trialData(r,1), trialData(r,2), trialData(r,3), ...
-            trialData(r,4), trialData(r,5));
-    end
-    fclose(fid);
-end
+T = array2table(trialData, 'VariableNames', ...
+    {'TrialNumber','StimulusLocation','Response', ...
+     'AngularError_deg','ResponseTime_s'});
+writetable(T, [sessionPath '.csv']);
 
 % ── Results summary window ────────────────────────────────────────────────
 resFig = uifigure('Name', 'Results', ...
@@ -1031,7 +951,7 @@ end % showResults
 
 % ─────────────────────────────────────────────────────────────────────────
 function fig = drawCircularHeatmap(values, isDiscrete, metricLabel, ...
-                                    description, CFG, stimLabel, stats)
+                                    description, CFG, stimLabel)
 % Renders a circular heatmap using the conventions defined in the PRD:
 %
 %   Discrete mode   — 6 solid 60° wedges, each centered on its speaker
@@ -1041,13 +961,9 @@ function fig = drawCircularHeatmap(values, isDiscrete, metricLabel, ...
 %   Both modes: listener head at center (nose → 0°/front), speaker labels
 %   and intermediate 30° degree ticks around the outside, green→yellow→red
 %   color scale legend at the bottom.
-%
-%   The stats struct carries .accuracy (NaN for Continuous, omitted from
-%   the subtitle line when so), .meanErr, and .meanRT. These are rendered
-%   as a third text line below the description subtitle (PRD v1.4 §6.2).
 
-fig = figure('Color', [1 1 1], 'Position', [100 100 600 700], 'Visible', 'off');
-ax  = axes(fig, 'Position', [0.05 0.10 0.90 0.78]);
+fig = figure('Color', [1 1 1], 'Position', [100 100 600 680], 'Visible', 'off');
+ax  = axes(fig, 'Position', [0.05 0.12 0.90 0.78]);
 hold(ax, 'on');
 axis(ax, 'equal', 'off');
 
@@ -1183,29 +1099,8 @@ if ~isDiscrete, modeStr = 'Continuous Panning'; end
 title(ax, sprintf('%s — %s  (%s)', metricLabel, modeStr, stimLabel), ...
     'FontSize', 12, 'FontWeight', 'bold', 'Color', [0.10 0.10 0.10]);
 
-% Stats subtitle line (PRD v1.4 §6.2) — third text line below the
-% description subtitle. Smaller and lighter than the description so the
-% visual hierarchy is title > description > stats. Continuous mode
-% omits accuracy (no "correct" speaker for a panned virtual position).
-if isDiscrete && ~isnan(stats.accuracy)
-    statsStr = sprintf( ...
-        'Accuracy: %.1f%%   Mean Angular Error: %.1f°   Mean Response Time: %.2f s', ...
-        stats.accuracy, stats.meanErr, stats.meanRT);
-else
-    statsStr = sprintf( ...
-        'Mean Angular Error: %.1f°   Mean Response Time: %.2f s', ...
-        stats.meanErr, stats.meanRT);
-end
-% MATLAB's subtitle() is anchored to the axes title and accepts cell-array
-% input to render multiple lines. We pass {description; statsStr} so the
-% stats sit directly below the description, preserving the intended
-% visual hierarchy (title > description > stats).
 if ~isempty(description)
-    subtitle(ax, {description; statsStr}, ...
-        'FontSize', 9, 'Color', [0.40 0.40 0.40]);
-else
-    subtitle(ax, statsStr, ...
-        'FontSize', 9, 'Color', [0.45 0.45 0.45]);
+    subtitle(ax, description, 'FontSize', 9, 'Color', [0.40 0.40 0.40]);
 end
 
 xlim(ax, [-1.55 1.55]);

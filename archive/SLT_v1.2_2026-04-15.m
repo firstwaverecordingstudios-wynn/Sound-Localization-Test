@@ -7,17 +7,9 @@
 %
 % Author  : Claude (Anthropic) in collaboration with project owner
 % Date    : 2026-04-15
-% Version : 1.3
+% Version : 1.2
 %
 % Changelog:
-%   v1.3 (2026-04-15) — ASIO device support:
-%     - tryOpenAudio now enumerates devices via
-%       getAudioDevices(audioPlayerRecorder) instead of audiodevinfo,
-%       which only sees Windows MME/DirectSound drivers. The new path
-%       sees ASIO devices (e.g. "Focusrite USB ASIO") that expose all
-%       hardware output channels, not just the Windows-default stereo
-%       pair. ASIO devices are preferred when present; non-default
-%       devices are the fallback; silent mode is the last resort.
 %   v1.2 (2026-04-15) — PRD v1.4 stats display & export:
 %     - drawCircularHeatmap now accepts a stats struct (accuracy, meanErr,
 %       meanRT) and renders a third text line below the description
@@ -778,54 +770,40 @@ function [aPR, deviceOK] = tryOpenAudio(CFG)
 % Attempts to open a multi-channel audio output device via
 % audioPlayerRecorder. If no suitable device is found, returns
 % deviceOK = false so the experiment can run in silent (UI-test) mode.
-%
-% DEVICE ENUMERATION: We use getAudioDevices(audioPlayerRecorder) rather
-% than the legacy audiodevinfo, because audiodevinfo only sees devices
-% exposed via Windows MME/DirectSound/WASAPI — which typically caps the
-% Focusrite (and similar pro interfaces) at the 2-channel default-pair
-% face the OS shows. getAudioDevices sees ASIO devices, which expose all
-% hardware output channels.
-%
-% SELECTION POLICY: Prefer any device whose name contains "ASIO" (case-
-% insensitive). If none, fall back to the first non-"Default" device.
-% If still none, run in silent mode. Channel-count is not pre-checked
-% because getAudioDevices does not report per-device channel counts;
-% instead we attempt the construction with PlayerChannelMapping = 1:6
-% and let the constructor throw if the device cannot supply that many
-% channels — caught below and degraded to silent mode.
 
 deviceOK = false;
 aPR      = [];
 
 try
-    devNames = getAudioDevices(audioPlayerRecorder);
-    if isempty(devNames)
+    info = audiodevinfo;
+    if isempty(info.output)
         warning('SLT:noAudio', ...
             'No audio output device found — running in silent mode.');
         return;
     end
 
-    % Prefer ASIO; otherwise first non-Default; otherwise nothing.
-    isAsio  = contains(devNames, 'ASIO', 'IgnoreCase', true);
-    isDflt  = strcmpi(devNames, 'Default');
-    if any(isAsio)
-        devName = devNames{find(isAsio, 1)};
-    elseif any(~isDflt)
-        devName = devNames{find(~isDflt, 1)};
-    else
+    % Find first output device with at least 6 channels
+    devID = -1;
+    for i = 1:length(info.output)
+        if info.output(i).MaxOutputChannels >= CFG.numChannels
+            devID = info.output(i).ID;
+            break;
+        end
+    end
+
+    if devID < 0
         warning('SLT:noAudio', ...
-            'Only the "Default" device is available — it is unlikely to support %d channels. Running in silent mode.', ...
+            'No %d-channel output device found — running in silent mode.', ...
             CFG.numChannels);
         return;
     end
 
+    devName = audiodevinfo(0, devID, 'Name');
     aPR = audioPlayerRecorder( ...
-        'SampleRate',           CFG.sampleRate, ...
-        'Device',               devName, ...
+        'SampleRate',          CFG.sampleRate, ...
+        'Device',              devName, ...
         'PlayerChannelMapping', 1:CFG.numChannels);
     deviceOK = true;
-    fprintf('SLT: opened audio device "%s" with %d output channels.\n', ...
-        devName, CFG.numChannels);
 
 catch ME
     warning('SLT:noAudio', 'Audio init failed: %s', ME.message);

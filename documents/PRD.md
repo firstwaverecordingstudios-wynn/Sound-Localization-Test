@@ -1,7 +1,7 @@
 # Product Requirement Document
 ## Sound Localization Test (SLT)
-**Version:** 1.3
-**Date:** 2026-04-14
+**Version:** 1.5
+**Date:** 2026-04-15
 **Author:** Claude (Anthropic) in collaboration with the project owner
 
 ---
@@ -26,6 +26,8 @@ Six loudspeakers are arranged in a regular hexagonal formation centered on the l
 | 6 | 300° | Front-Left |
 
 Audio is routed via a multi-channel audio interface using MATLAB's **Audio Toolbox** (audioPlayerRecorder). MATLAB audio channels 1–6 map directly to speakers 1–6. Psychtoolbox is not required; the Audio Toolbox provides sufficient timing precision for a reaction-time localization experiment where response latency is on the order of hundreds of milliseconds to seconds.
+
+**Driver requirement:** The audio interface must be accessed via its **ASIO driver**, not via Windows MME/DirectSound/WASAPI. Pro audio interfaces (e.g. Focusrite, RME, MOTU) typically expose only their first stereo pair through the Windows-side drivers; the ASIO driver is what surfaces all hardware output channels (≥6 in this case). `tryOpenAudio` enumerates devices via `getAudioDevices(audioPlayerRecorder)` and prefers any device whose name contains "ASIO". The manufacturer's ASIO driver must be installed; for class-compliant interfaces without a vendor ASIO driver, ASIO4ALL is a generic fallback.
 
 ---
 
@@ -167,6 +169,8 @@ Modal dialog on Start. Session filename: SubjectID_YYYYMMDD_HHMMSS.
 - **Average angular error:** mean absolute angular difference (degrees), circular wraparound accounted for.
 - **Average response time:** mean seconds from stimulus onset to response.
 
+These statistics are surfaced in three places: (a) the Results summary window stats label, (b) a third text line on each heatmap below title and description subtitle (see §6.2), and (c) the CSV header comment block (see §6.3).
+
 ### 6.2 Heatmap Visualizations
 
 Two circular heatmap figures are generated: one for angular error, one for response time. Color scale: **green = low, yellow = mid, red = high**.
@@ -177,9 +181,29 @@ Two circular heatmap figures are generated: one for angular error, one for respo
 
 **Both modes:** A top-down listener head icon (circle with eyes, ears, and a forward-pointing nose) is rendered at center, nose pointing toward Speaker 1 (0°, front). Speaker labels appear at r=158 px from center. The Description field from the Intro GUI is used as a figure subheader. Titles reflect content clearly.
 
+**Stats subtitle line:** Below the description subtitle, each heatmap displays a third text line containing the session summary statistics. Style is smaller and lighter than the description subtitle but still legible.
+
+- **Discrete mode:** *"Accuracy: XX.X%   Mean Angular Error: XX.X°   Mean Response Time: X.XX s"*
+- **Continuous mode:** *"Mean Angular Error: XX.X°   Mean Response Time: X.XX s"* (accuracy is omitted because there is no "correct" speaker for a panned virtual position).
+
 ### 6.3 Data Export
 
-- **CSV:** one row per trial — Trial Number, Stimulus Location, Response, Angular Error (°), Response Time (s).
+- **CSV:** one row per trial — Trial Number, Stimulus Location, Response, Angular Error (°), Response Time (s). The CSV is preceded by a `#`-prefixed header comment block recording session metadata and summary statistics. The block contains, one field per line:
+
+  ```
+  # Sound Localization Test — Session Results
+  # Subject: <SubjectID>
+  # Date: <YYYY-MM-DD HH:MM:SS>
+  # Stimulus: <stim label>
+  # Mode: <Discrete Speakers | Continuous Panning>
+  # Description: <description string>
+  # Accuracy: XX.X%               (Discrete only — line omitted entirely for Continuous)
+  # Mean Angular Error: XX.X deg
+  # Mean Response Time: X.XX s
+  ```
+
+  The `#` prefix is the conventional CSV comment marker. Excel ignores the lines as malformed rows (they appear in the first column but do not interfere with the data table); MATLAB's `readtable(path, 'CommentStyle', '#')` skips them cleanly.
+
 - **Figures:** both heatmaps saved as .png.
 - All files saved to results/ with session filename.
 
@@ -194,4 +218,4 @@ Two circular heatmap figures are generated: one for angular error, one for respo
 
 ---
 
-*Document status: Awaiting user approval before implementation begins.*
+*Document status: PRD v1.5 reflects implemented behaviour. SLT.m is at v1.3. Pending hardware verification of channel routing (TASKS 11.5) and remaining live-session checks (8.7, 8.12, 9.x, 10.3.x).*
