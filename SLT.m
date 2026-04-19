@@ -6,10 +6,46 @@
 % measures the listener's ability to localize the sound source.
 %
 % Author  : Claude (Anthropic) in collaboration with project owner
-% Date    : 2026-04-15
-% Version : 1.3
+% Date    : 2026-04-19
+% Version : 1.4
 %
 % Changelog:
+%   v1.4 (2026-04-19) — Audio streaming rewrite (PRD v1.6 §2, §3.2):
+%     - Replaced the timer-based re-queue strategy in playLooping with
+%       a frame-streaming loop (streamAudio). Fixed-size frames are
+%       pumped into audioPlayerRecorder in a tight while loop; each
+%       aPR(frame) call blocks until the device can accept the next
+%       frame. drawnow limitrate between frames services UI events.
+%     - This fixes two audio bugs seen on first rig session 2026-04-19:
+%       (a) short integer-cycle tone buffers (1–8 ms) rumbled because
+%       the re-queue timer period floored at 50 ms and the device ran
+%       dry between re-queues; (b) the 4-copy pre-queue of the 2-second
+%       noise buffer blocked the main thread for ~8 s, freezing the UI.
+%     - Frame size bumped 1024 → 4096 samples (~85 ms at 48 kHz) and
+%       audioPlayerRecorder opened with matching BufferSize=4096 so each
+%       aPR() call dispatches one hardware callback's worth of audio.
+%       This gives ~85 ms of UI-stall headroom before any underrun;
+%       mouse-hover-driven UI work cannot glitch the audio.
+%     - Onset Hann ramp is now applied inside streamAudio to the FIRST
+%       dispatched frame only. Applying it to the repeated loop buffer
+%       (as v1.0–1.3 did upstream) baked an amplitude envelope into
+%       every copy, producing audible harmonic distortion at the loop-
+%       buffer rate. Removed applyOnsetRamp calls from runCalibration
+%       and runExperiment.
+%     - applyOffsetRamp is now wired into streamAudio: on response, a
+%       final frame with the offset ramp applied is dispatched before
+%       stopAudio. Closes TASK 8.7.
+%     - stopAudio is now a simple reset(aPR). The base-workspace
+%       SLT_loopTimer global is removed entirely.
+%     - Calibration advance flag moved from a local `nextDone` variable
+%       to calFig.UserData.nextDone. MATLAB anonymous-function closures
+%       capture locals BY VALUE at creation time, so the previous design
+%       froze the streamAudio termination predicate at nextDone=false
+%       forever. Using a handle-owned field makes the state reference-
+%       semantic and accessible to both the button callback and the
+%       streaming-loop closure.
+%     - tryOpenAudio now sets BufferSize=CFG.frameSize when constructing
+%       audioPlayerRecorder, and reports the buffer size on open.
 %   v1.3 (2026-04-15) — ASIO device support:
 %     - tryOpenAudio now enumerates devices via
 %       getAudioDevices(audioPlayerRecorder) instead of audiodevinfo,
@@ -62,6 +98,13 @@ CFG.numChannels   = 6;           % one channel per speaker
 CFG.rampMs        = 10;          % half-Hann onset/offset ramp duration (ms)
 CFG.xfadeMs       = 10;          % noise crossfade duration at loop point (ms)
 CFG.noiseDurSec   = 2;           % total noise buffer length before crossfade
+CFG.frameSize     = 4096;        % streaming frame size (samples) — ~85 ms at 48 kHz.
+                                 % Must match the device's BufferSize
+                                 % (set in tryOpenAudio) so each aPR()
+                                 % call dispatches exactly one hardware
+                                 % callback's worth of audio. Larger
+                                 % values give more UI-servicing headroom
+                                 % at the cost of onset latency.
 
 % Speaker angles in degrees, clockwise from front (Speaker 1 = 0°)
 CFG.speakerAngles = [0, 60, 120, 180, 240, 300];
@@ -290,15 +333,20 @@ uilabel(calFig, ...
     'HorizontalAlignment', 'center', 'FontSize', 11, ...
     'FontColor',           bodyColor);
 
-nextDone = false;
+% ── Calibration control state ──
+% nextDone is stashed in the figure's UserData (a handle-owned struct)
+% rather than a local variable so that anonymous-function closures
+% created below capture the figure handle (by reference) and read the
+% current value on each call. A local variable would be captured by
+% value at closure-creation time and never see updates from setDone.
+calFig.UserData.nextDone = false;
+
 btn_next = uibutton(calFig, ...
     'Text',            'Next Speaker', ...
     'Position',        [130 42 140 36], ...
     'FontSize',        12, 'FontWeight', 'bold', ...
     'BackgroundColor', [0.10 0.48 0.54], 'FontColor', [1 1 1], ...
-    'ButtonPushedFcn', @(~,~) setDone());
-
-    function setDone(), nextDone = true; end
+    'ButtonPushedFcn', @(~,~) setNextDone(calFig));
 
 [aPR, deviceOK] = tryOpenAudio(CFG);
 
@@ -312,7 +360,7 @@ for spk = 1:CFG.numChannels
         btn_next.Text = 'Done';
     end
 
-    nextDone = false;
+    calFig.UserData.nextDone = false;
     lbl_speaker.Text = sprintf('Speaker %d  —  Channel %d  (%.0f°)', ...
         spk, spk, CFG.speakerAngles(spk));
 
@@ -320,12 +368,24 @@ for spk = 1:CFG.numChannels
         amps       = zeros(1, CFG.numChannels);
         amps(spk)  = 1.0;
         outBuf     = buildOutputBuffer(loopBuf, amps, CFG.numChannels);
-        outBuf     = applyOnsetRamp(outBuf, CFG.sampleRate, CFG.rampMs);
-        playLooping(aPR, outBuf, CFG.sampleRate);
-    end
-
-    while ~nextDone && isvalid(calFig)
-        pause(0.05);
+        % Note: no applyOnsetRamp here — streamAudio applies the onset
+        % ramp internally to just the first dispatched frame. Applying
+        % it to the repeatable loop buffer would bake an amplitude
+        % envelope into every copy, producing audible harmonic
+        % distortion at the loop-buffer rate.
+        % streamAudio blocks until respGetter returns true or the figure
+        % is closed. The closure reads `nextDone` (set by the Next
+        % Speaker / Done button) and also treats a closed figure as a
+        % quit signal so the loop does not hang if the user closes the
+        % window mid-tone.
+        streamAudio(aPR, outBuf, CFG, ...
+            @() calFig.UserData.nextDone || ~isvalid(calFig));
+    else
+        % Silent mode: no audio, but still need to wait for the user to
+        % click Next Speaker / Done before advancing.
+        while ~calFig.UserData.nextDone && isvalid(calFig)
+            pause(0.05);
+        end
     end
 
     if deviceOK, stopAudio(aPR); end
@@ -341,6 +401,16 @@ if isvalid(calFig)
     close(calFig);
 end
 end % runCalibration
+
+% ──────────────────────────────────────────────────────────────────────
+function setNextDone(calFig)
+% Calibration advance-button callback. Writes the "advance" flag to the
+% figure's UserData so streamAudio's closure (which also references
+% calFig.UserData.nextDone) will see the updated value on its next poll.
+if isvalid(calFig)
+    calFig.UserData.nextDone = true;
+end
+end % setNextDone
 
 
 % =========================================================================
@@ -435,19 +505,25 @@ for t = 1:nTrials
         amps = computePanAmplitudes(stimLoc, CFG.speakerAngles);
     end
 
-    % Build multichannel buffer and apply onset ramp
     outBuf = buildOutputBuffer(loopBuf, amps, CFG.numChannels);
-    outBuf = applyOnsetRamp(outBuf, CFG.sampleRate, CFG.rampMs);
+    % Note: no applyOnsetRamp here — streamAudio applies the onset ramp
+    % internally to just the first dispatched frame. Applying it to
+    % loopBuf would bake an amplitude envelope into every copy.
 
-    if deviceOK, playLooping(aPR, outBuf, CFG.sampleRate); end
-
+    % Record start time BEFORE the first frame dispatch so response time
+    % is measured from the moment the operator (and acoustically, the
+    % device) begins playback. drawnow limitrate inside streamAudio
+    % keeps UI responsive during the wait.
     tStart = tic;
 
-    % Collect listener response
+    % Collect listener response. The wait-for-* helpers install the
+    % keypress/click handlers and either run streamAudio (deviceOK)
+    % or busy-poll the response sink (silent mode). Either way they
+    % return only when the response has been recorded.
     if isDiscrete
-        response = waitForDiscreteResponse(expFig);
+        response = waitForDiscreteResponse(expFig, aPR, outBuf, CFG, deviceOK);
     else
-        response = waitForRingClick(ax, expFig);
+        response = waitForRingClick(ax, expFig, aPR, outBuf, CFG, deviceOK);
     end
 
     responseTime = toc(tStart);
@@ -494,17 +570,18 @@ end % selectStimulusLocation
 
 
 % ─────────────────────────────────────────────────────────────────────────
-function response = waitForDiscreteResponse(fig)
-% Blocks until the listener either:
-%   (a) presses a key in the range 1–6, OR
-%   (b) clicks one of the six large speaker buttons on the Discrete diagram.
-% Returns the integer speaker number indicated.
+function response = waitForDiscreteResponse(fig, aPR, outBuf, CFG, deviceOK)
+% Installs keypress + speaker-button click handlers, then either runs
+% streamAudio (live hardware) or busy-polls (silent mode) until the
+% listener indicates a response. Returns the integer speaker number.
 %
-% Both input paths write to fig.UserData.response, so whichever event fires
-% first wins — clicks and keypresses cannot race each other.
+% Both input paths write to fig.UserData.response via the shared
+% assignResponse helper and the captureKey nested function below, so
+% keypress and click cannot race: whichever writes first wins.
 %
-% Uses the figure's KeyPressFcn to capture keypresses without polling
-% the keyboard directly, keeping CPU usage low during the wait.
+% streamAudio uses a closure over fig.UserData.response as its termination
+% predicate, so when the response is captured the streaming loop exits
+% and this function returns.
 
 fig.UserData.response = [];
 fig.KeyPressFcn = @captureKey;
@@ -516,13 +593,23 @@ fig.KeyPressFcn = @captureKey;
         end
     end
 
-while isempty(fig.UserData.response) && isvalid(fig)
-    pause(0.02);
+respReady = @() ~isempty(fig.UserData.response) || ~isvalid(fig);
+
+if deviceOK
+    streamAudio(aPR, outBuf, CFG, respReady);
+else
+    while ~respReady()
+        pause(0.02);
+    end
 end
 
 if isvalid(fig)
     response = fig.UserData.response;
     fig.KeyPressFcn = '';
+    if isempty(response)
+        response = 1;   % streamAudio returned without a response
+                         % (e.g. device error) — use benign default
+    end
 else
     response = 1;   % figure was closed; return a benign default
 end
@@ -530,11 +617,18 @@ end % waitForDiscreteResponse
 
 
 % ─────────────────────────────────────────────────────────────────────────
-function response = waitForRingClick(ax, fig)
-% Blocks until the listener clicks anywhere on the response ring axes.
-% Converts the click (x,y) into a clock-angle degree (1–360, 0=top, CW).
+function response = waitForRingClick(ax, fig, aPR, outBuf, CFG, deviceOK)
+% Installs the ring-click handler, then either runs streamAudio (live
+% hardware) or busy-polls (silent mode) until the listener clicks the
+% response ring. Converts the click (x,y) into a clock-angle degree
+% (1–360, 0=top, CW).
+%
+% Uses a dedicated field fig.UserData.ringResponse (rather than the
+% shared .response sink used by Discrete mode) so there is no confusion
+% about types between the two modes — .response holds an integer 1–6
+% in Discrete, .ringResponse holds an integer 1–360 in Continuous.
 
-response = -1;
+fig.UserData.ringResponse = [];
 ax.ButtonDownFcn = @captureClick;
 
     function captureClick(~, evt)
@@ -543,14 +637,30 @@ ax.ButtonDownFcn = @captureClick;
         dy  = cp(2);   % y relative to axes centre
         % atan2d(dx, dy) gives 0 at top, positive clockwise
         deg = mod(atan2d(dx, dy), 360);
-        response = round(deg);
-        if response == 0, response = 360; end
+        r   = round(deg);
+        if r == 0, r = 360; end
+        fig.UserData.ringResponse = r;
     end
 
-while response == -1 && isvalid(fig)
-    pause(0.02);
+respReady = @() ~isempty(fig.UserData.ringResponse) || ~isvalid(fig);
+
+if deviceOK
+    streamAudio(aPR, outBuf, CFG, respReady);
+else
+    while ~respReady()
+        pause(0.02);
+    end
 end
-ax.ButtonDownFcn = '';
+
+if isvalid(fig)
+    response = fig.UserData.ringResponse;
+    ax.ButtonDownFcn = '';
+    if isempty(response)
+        response = 1;   % device error or similar — benign default
+    end
+else
+    response = 1;
+end
 end % waitForRingClick
 
 
@@ -822,10 +932,11 @@ try
     aPR = audioPlayerRecorder( ...
         'SampleRate',           CFG.sampleRate, ...
         'Device',               devName, ...
-        'PlayerChannelMapping', 1:CFG.numChannels);
+        'PlayerChannelMapping', 1:CFG.numChannels, ...
+        'BufferSize',           CFG.frameSize);
     deviceOK = true;
-    fprintf('SLT: opened audio device "%s" with %d output channels.\n', ...
-        devName, CFG.numChannels);
+    fprintf('SLT: opened audio device "%s" with %d output channels, buffer=%d samples.\n', ...
+        devName, CFG.numChannels, CFG.frameSize);
 
 catch ME
     warning('SLT:noAudio', 'Audio init failed: %s', ME.message);
@@ -834,54 +945,102 @@ end % tryOpenAudio
 
 
 % ─────────────────────────────────────────────────────────────────────────
-function playLooping(aPR, buffer, sampleRate)
-% Starts continuous looped playback of buffer on the audio device.
+function streamAudio(aPR, loopBuf, CFG, respGetter)
+% Continuously pumps frames of loopBuf into the audio device until the
+% respGetter callback returns true (response captured) or the calling
+% figure is closed.
 %
-% audioPlayerRecorder does not natively loop, so we pre-fill its internal
-% queue with several copies of the buffer and then use a MATLAB timer to
-% re-queue the buffer at regular intervals, keeping the queue full and
-% playback continuous until stopAudio() is called.
+% ARCHITECTURE (PRD v1.6 §2): audioPlayerRecorder is a frame-by-frame
+% streaming device — each call aPR(frame) blocks until the device can
+% accept the next frame. We build a frame-sized buffer by concatenating
+% copies of loopBuf and then loop, pumping frames and servicing UI
+% events between them. The ASIO driver's own buffering paces the loop;
+% no MATLAB timer is needed.
+%
+% This replaces the v1.3 playLooping function, which used a 4-copy
+% pre-queue + fixed-rate timer re-queue. That design proved incompatible
+% with short integer-cycle tone buffers (1–8 ms) because the timer
+% period floored at 50 ms while the device drained in <30 ms, producing
+% a 20 Hz amplitude envelope — audible as a low rumble on pure tones.
+%
+% ONSET/OFFSET RAMPS: the onset ramp is applied to the FIRST dispatched
+% frame only — applying it to loopBuf before entering streamAudio would
+% bake the ramp into every repeated copy, producing an amplitude
+% modulation at the loop-buffer rate (e.g. 1 kHz for a 1000 Hz tone,
+% heard as harmonic distortion). The offset ramp is applied to ONE
+% final tail frame after respGetter fires; response time is already
+% captured by then so the ~21 ms fade does not affect the measurement
+% and simply prevents an audible click at device stop.
+%
+% loopBuf must NOT have the onset ramp pre-applied — callers pass the
+% raw multichannel buffer directly.
 
-% Pre-fill the queue to minimise onset latency
-for k = 1:4
-    aPR(buffer);
+frameN = CFG.frameSize;
+loopN  = size(loopBuf, 1);
+
+% Build a "tile" buffer long enough to hold one full loop PLUS one full
+% frame, so any frame-sized window starting anywhere in [1, loopN] fits
+% inside the tile. For integer-cycle tone buffers the loop point is
+% phase-continuous, so splicing concatenated copies is seamless. The
+% noise buffer is built with an equal-power crossfade and is seamless
+% across copies for the same reason.
+nCopies = ceil((loopN + frameN) / loopN);
+tiled   = repmat(loopBuf, nCopies, 1);
+
+% Pre-computed onset ramp applied to the first dispatched frame only.
+rampN   = min(round(CFG.rampMs / 1000 * CFG.sampleRate), frameN);
+h       = hann(rampN * 2);
+onRamp  = h(1:rampN);                                   % 0 → 1
+
+cursor  = 1;   % 1-based index into `tiled`; always kept in [1, loopN]
+isFirst = true;
+
+while ~respGetter()
+    frame = tiled(cursor : cursor + frameN - 1, :);
+
+    if isFirst
+        % Apply onset Hann ramp to just the first rampN samples of the
+        % first frame. Everything after that samples the raw periodic
+        % loop buffer, so there is no per-copy amplitude modulation.
+        frame(1:rampN, :) = frame(1:rampN, :) .* onRamp;
+        isFirst = false;
+    end
+
+    try
+        aPR(frame);
+    catch
+        % Device was released elsewhere — exit cleanly.
+        return;
+    end
+
+    % Advance and wrap back into the first-copy region [1, loopN].
+    cursor = mod(cursor - 1 + frameN, loopN) + 1;
+
+    % Service UI events (button clicks, keypresses). drawnow limitrate
+    % services the event queue (so button callbacks fire) but caps
+    % repaint at ~20 Hz. Plain drawnow is synchronous and blocks on
+    % full repaint, which stalls the device long enough to cause
+    % audible jitter during UI interaction.
+    drawnow limitrate;
 end
 
-% Re-queue at half the buffer duration to stay ahead of playback
-period = max(0.05, size(buffer, 1) / sampleRate * 0.5);
-t = timer('ExecutionMode', 'fixedRate', ...
-          'Period',        period, ...
-          'TimerFcn',      @(~,~) requeue(aPR, buffer));
-start(t);
-assignin('base', 'SLT_loopTimer', t);   % store for retrieval by stopAudio
-
-    function requeue(dev, buf)
-        try
-            dev(buf);   % push another copy into the queue
-        catch
-            % Device may have been released — timer will be stopped shortly
-        end
-    end
-end % playLooping
+% ── Offset ramp: one final tail frame with applyOffsetRamp applied ──
+tailFrame = tiled(cursor : cursor + frameN - 1, :);
+tailFrame = applyOffsetRamp(tailFrame, CFG.sampleRate, CFG.rampMs);
+try
+    aPR(tailFrame);
+catch
+    % Device already released — nothing to do.
+end
+end % streamAudio
 
 
 % ─────────────────────────────────────────────────────────────────────────
 function stopAudio(aPR)
-% Halts looped playback: stops and deletes the background timer, then
-% resets the audioPlayerRecorder so it is ready for the next trial.
-
-if evalin('base', "exist('SLT_loopTimer','var')")
-    t = evalin('base', 'SLT_loopTimer');
-    try
-        stop(t);
-    catch
-    end
-    try
-        delete(t);
-    catch
-    end
-    evalin('base', "clear SLT_loopTimer");
-end
+% Halts playback by resetting the audioPlayerRecorder so it is ready for
+% the next trial. The v1.4 streaming rewrite eliminated the background
+% timer that previously kept a loop alive, so this is now a one-line
+% wrapper around reset() with a guard for robustness across re-entry.
 
 try
     reset(aPR);

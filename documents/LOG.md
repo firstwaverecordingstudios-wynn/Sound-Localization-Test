@@ -331,3 +331,166 @@
 **Next step:** Operator runs the experiment at the rig per the plan from the previous LOG entry: Calibrate first (preferably with Gaussian Noise for easy localization), then a short Discrete session, then a short Continuous session, then open the CSVs in Excel. Report back with what works, any audible artifacts, and any errors.
 
 ---
+
+## 2026-04-19 — First Live Rig Session: Audio Bugs Diagnosed
+
+**Description:** First session with the Focusrite ASIO interface physically connected. `tryOpenAudio` opened the device correctly (Section 11 verified), but playback revealed two audio bugs. Diagnosis traced both to the timer-based re-queue strategy in `playLooping`. No code changes today — PRD and TASKS updated to reflect the rewrite plan; implementation to follow in a separate session.
+
+**Field observations:**
+- Pure tones (125 / 250 / 500 / 750 / 1000 Hz) through Calibration and Discrete mode sounded like a low rumble with intermittent jitter rather than a clean sine. UI remained responsive throughout.
+- Gaussian noise through Calibration sounded correct acoustically, but the Calibration GUI froze — the "Next Speaker" button did not respond. Program had to be force-quit to stop the noise.
+
+**Diagnosis:** Both symptoms trace to `playLooping`'s architecture.
+
+- For tones: the integer-cycle tone buffers are 48–384 samples (1–8 ms) long. The re-queue timer period is `max(0.05, halfBuf)`, which floors at 50 ms for every tone. The device drains its four pre-queued copies in <30 ms and then runs dry for the remaining 20 ms of each 50 ms timer period. The result is a 20 Hz amplitude envelope imposed on the tone — perceived as "rumble" — with Windows timer jitter perceived as "intermittent jitters."
+- For noise: the 2-second noise buffer means the four pre-queue calls push 8 seconds of audio into the device before `playLooping` returns. Each `aPR(buffer)` call blocks until the device can accept the buffer, so the main MATLAB thread is frozen for the full pre-queue duration. No UI callbacks fire during that time — hence the dead "Next Speaker" button. Noise masked the timer-rate artifact that is audible on tones.
+
+**Rationale for the rewrite:** MATLAB's `audioPlayerRecorder` is designed for frame-by-frame streaming, not for indefinite looping. The correct pattern is a tight pumping loop that feeds fixed-size frames into the device; the ASIO driver paces the loop automatically because each call blocks until the device can accept the next frame. This removes the timer entirely, removes the pre-queue blocking, and gives us explicit per-frame control at stop time — which also lets us finally wire in `applyOffsetRamp` (TASK 8.7) without contorting the architecture.
+
+**Documents updated:**
+- PRD bumped to v1.6: added §2 "Audio streaming model" paragraph, §3.2 "Playback note" subsection, revised §5 trial-loop step 2, refreshed document-status footer.
+- TASKS bumped to v1.6: added Section 12 (ten new tasks), updated carry-forward notes on 8.7 and 8.12 to point at Section 12, refreshed document-status footer.
+
+**Tests run:** None — diagnosis and documentation only.
+
+**Next step:** User approval of PRD v1.6 / TASKS Section 12. On approval, implement tasks 12.1–12.5 as small targeted edits (per the lesson from Refinement Round 1), with static analysis between edits and on-rig verification of 12.6–12.10 in the same session.
+
+---
+
+## 2026-04-19 — Section 12 Implementation (SLT.m v1.3 → v1.4)
+
+**Description:** Implemented the audio-streaming rewrite (PRD v1.6 §2, §3.2 / TASKS Section 12) at the rig in one continuous session, with live hardware in the loop. The implementation went through four distinct attempts before landing on a working design — each revealed a separate class of bug invisible at design time. Final result: clean sine tones with responsive UI and no jitter during mouse interaction. User confirmed "program runs well." Hardware verification tasks 12.6–12.9 passed; 12.10 (offline acoustic regression) deferred.
+
+### Attempt 1 — Initial frame-streaming rewrite
+
+**Changes (in the order applied):**
+
+*Edit A — Header bookkeeping:*
+- Bumped Version `1.3` → `1.4`, Date `2026-04-15` → `2026-04-19`.
+- Added a v1.4 changelog block describing the streaming rewrite.
+
+*Edit B — Added `CFG.frameSize = 1024`.*
+
+*Edit C — Replaced `playLooping` with `streamAudio`:*
+- New function: concatenates `loopBuf` into a tile ≥ one frame long, walks a cursor through it dispatching `frameN`-sample frames via `aPR(frame)` in a tight `while ~respGetter()` loop. `drawnow limitrate` between frames.
+- Offset ramp applied to one final tail frame after `respGetter` fires (closes TASK 8.7).
+- Simplified `stopAudio` to bare `reset(aPR)`; removed the base-workspace `SLT_loopTimer` global entirely.
+
+*Edit D — `runCalibration` uses `streamAudio`:*
+- Replaced the play-then-poll pair with a single `streamAudio(aPR, outBuf, CFG, @() nextDone || ~isvalid(calFig))` call. Silent-mode fallback retained.
+
+*Edit E — `runExperiment` trial loop + wait helpers:*
+- Trial loop now passes `aPR, outBuf, CFG, deviceOK` into `waitForDiscreteResponse` / `waitForRingClick`. `tStart = tic` moved before the response wait so response time measurement is unaffected.
+- `waitForDiscreteResponse` signature extended; body rewritten to install keypress handler, then call `streamAudio` with closure `@() ~isempty(fig.UserData.response) || ~isvalid(fig)`.
+- `waitForRingClick` signature extended; uses dedicated `fig.UserData.ringResponse` sink (integer 1–360) to avoid type-confusion with Discrete's 1–6 `.response` sink.
+
+Static analysis clean after each edit. Functional smoke test (file parses + help renders) passed.
+
+### Attempt 1 failure at rig: index out of bounds
+
+**Field observation:** First click of Calibrate (1000 Hz tone) threw `Index in position 1 exceeds array bounds. Index must not exceed 1152.`
+
+**Diagnosis:** The cursor-wrap rule in streamAudio was wrong for the tone case. For a 1000 Hz tone, `loopN = 48` and `frameN = 1024`, giving `nCopies = 22` and `tileN = 1056`. After the first frame dispatch, `cursor = 1025`; the wrap rule `cursor = cursor - loopN` subtracted only 48, leaving `cursor = 977` — but `977 + 1024 - 1 = 2000`, still way past `tileN = 1056`. Needed to wrap by multiple `loopN` increments, and the tile needed to be large enough that any valid wrapped position leaves room for a full frame.
+
+### Attempt 2 — Tile-sizing fix
+
+*Edit F — Rewrote the tile sizing and wrap rule:*
+- Changed `nCopies = ceil((2 * frameN) / loopN)` (always ≥ two frames long).
+- Changed the wrap to `while cursor + frameN - 1 > tileN, cursor = cursor - loopN; end` (repeated subtraction).
+
+In-isolation simulation passed all five tone cases over 2000 iterations. But the simulation caught a new failure: the noise case produced `minCursor = -991`, i.e. cursor went negative. The repeated-subtract rule subtracts `loopN = 95520` from a cursor in roughly `[94498, 95520]`, giving a negative result.
+
+### Attempt 3 — Modulo-based cursor
+
+*Edit G — Replaced the repeated-subtract rule with modulo wrap:*
+- `nCopies = ceil((loopN + frameN) / loopN)` — tile is always one full loop plus at least one full frame.
+- Cursor advance: `cursor = mod(cursor - 1 + frameN, loopN) + 1` — keeps cursor in `[1, loopN]` at all times, and `cursor + frameN - 1 ≤ loopN + frameN ≤ tileN` is guaranteed by construction.
+
+In-isolation simulation passed all six cases (five tones + noise) over 3000 iterations with phase continuity verified against the infinite-periodic-stream reference.
+
+### Attempt 3 failure at rig: harmonics + dead button
+
+**Field observations:** Frequency was correct but tone had audible harmonic distortion — not a clean sine. Next Speaker button did nothing.
+
+**Diagnosis (harmonics):** `applyOnsetRamp` was being called on `outBuf` (which is the small repeatable loop buffer) BEFORE `streamAudio` was entered. `streamAudio` then tiled the ramped buffer into frames — which meant the Hann ramp repeated every `loopN` samples (every 48 samples → 1 kHz modulation on a 1000 Hz tone). The amplitude envelope at the loop-buffer rate produced harmonic distortion.
+
+**Diagnosis (dead Next button):** Separate bug. The calibration closure was:
+```matlab
+nextDone = false;
+btn_next = uibutton(..., 'ButtonPushedFcn', @(~,~) setDone());
+function setDone(), nextDone = true; end
+...
+streamAudio(aPR, outBuf, CFG, @() nextDone || ~isvalid(calFig));
+```
+The nested `setDone` correctly mutated `nextDone` in the parent workspace. But the anonymous function `@() nextDone || ~isvalid(calFig)` is NOT a nested function — it captures `nextDone` **by value at creation time**. So the closure's view of `nextDone` was frozen at `false` forever. Confirmed by writing and running a minimal `testClosureCapture.m`: `before setFlag: getter() = 0 / after setFlag: getter() = 0`.
+
+### Attempt 4 — Ramp placement + closure semantics + UI responsiveness
+
+*Edit H — Moved onset ramp into `streamAudio`:*
+- Pre-computed `onRamp = hann(rampN*2)(1:rampN)` at function entry.
+- Applied to the first `rampN` samples of the FIRST dispatched frame only (guarded by `isFirst` flag). Every subsequent frame samples the raw periodic loop — no per-copy envelope, clean sine.
+- Removed `applyOnsetRamp` calls from `runCalibration` and `runExperiment` with inline comments explaining the new contract.
+
+*Edit I — Moved `nextDone` to `calFig.UserData.nextDone`:*
+- The figure is a handle object; anonymous closures capture the handle by reference, so reads of `calFig.UserData.nextDone` always fetch the current value.
+- Added a top-level `setNextDone(calFig)` function (replacing the deleted nested `setDone`) that writes the flag via the handle.
+- All three readers updated: `streamAudio` closure, silent-mode poll loop, and the outer loop's break test.
+
+*Edit J — `drawnow limitrate` instead of plain `drawnow`:*
+- I had briefly switched to plain `drawnow` thinking it was needed for button-callback firing; that was actually the closure-capture bug in disguise.
+- Plain `drawnow` is synchronous and blocks until all queued callbacks + repaints complete — with uifigure mouse-hover events that takes long enough to starve the audio device between frames. Reverted to `drawnow limitrate`.
+
+### Attempt 4 field result: harmonics fixed, button works, but jitter during UI interaction
+
+**Field observation:** Clean sine, working button. Jitter whenever cursor highlights a UI component.
+
+**Diagnosis:** `audioPlayerRecorder`'s default `BufferSize` is 1024 samples = 21 ms at 48 kHz. `drawnow limitrate` still has to service the UI event queue, and a mouse-hover burst on a uifigure component can take longer than 21 ms of CPU. During that stall the device's small internal buffer drains and underruns — glitch.
+
+### Attempt 5 — Larger device buffer
+
+*Edit K — Bumped `CFG.frameSize` 1024 → 4096 (≈85 ms) and set `BufferSize=CFG.frameSize` when constructing `audioPlayerRecorder`:*
+- The device now has ~85 ms of internal runway per hardware callback. Any UI stall under that duration cannot underrun.
+- `tryOpenAudio` constructor updated to pass `BufferSize`; console log on successful open now reports the buffer size too.
+
+**Field result:** Clean sine, working button, no jitter even during aggressive UI interaction. User confirmed "program runs well."
+
+**Rationale highlights:**
+
+- **Frame-streaming over timer-re-queue:** The timer approach was fundamentally incompatible with short buffers because of Windows timer floor (≈10–15 ms) combined with the MATLAB-timer-period minimum of 50 ms in the old code. Frame-streaming lets the ASIO driver's own buffering pace the loop — no timer needed.
+- **Onset ramp inside `streamAudio` (not upstream):** This is counterintuitive because "apply ramps before playback" is a textbook pattern — but it only works when "playback" plays the buffer once. When the buffer is tiled into frames and played repeatedly, a ramp applied upstream repeats at the loop rate. The correct place for a one-shot onset ramp is the one-shot first frame.
+- **`UserData.nextDone` for reference-semantic state:** This was the hardest bug of the day to diagnose from symptoms alone. The button callback appeared to "do nothing" but was actually doing its job — it was the observer (the anonymous closure) that was frozen. Stashing mutable state on a handle object is the idiomatic MATLAB fix. I also wrote a standalone `testClosureCapture.m` to confirm the semantics empirically before committing to the fix; the minimal test showed `getter()` returning 0 even after a nested function set the captured local to `true`. The test file was deleted after verification.
+- **`BufferSize` matched to `frameSize`:** Important symmetry. If `BufferSize=1024` but we push 4096-sample frames, the device would have to split each frame across four hardware callbacks, and the extra latency between "frame accepted by object" and "frame actually playing" would manifest as jitter. Matching them means each `aPR(frame)` call corresponds to exactly one hardware callback.
+- **Pre-queue idea rejected:** At one point I tried pre-queuing 2–4 frames into the device before entering the main loop, hoping to get an independent runway. But `aPR(frame)` calls block on the internal-queue depth, which is fixed — pre-queuing just means the first few calls block for longer, it doesn't add any independent headroom. The only way to actually get more runway is a bigger `BufferSize`, which is what the final fix does.
+
+**Tests run:**
+
+| Test | Description | Result |
+|------|-------------|--------|
+| Static analysis after Edits A–K | MATLAB Code Analyzer after each of 11 small edits | PASS (0 issues each except the pre-existing `applyOnsetRamp might be unused` warning) |
+| Functional smoke test | `SLT.m` parses, `help SLT` renders v1.4 changelog | PASS |
+| Cursor simulation (Attempt 2) | 2000-iter simulation of cursor logic for 5 tones + noise | FAIL on noise case (cursor went negative) |
+| Cursor simulation (Attempt 3) | Same, with modulo-based cursor | PASS on all 6 cases, phase continuity verified |
+| `testClosureCapture.m` (standalone) | Minimal repro of anonymous-function by-value capture | PASS (confirmed bug: getter returned 0 after nested setter wrote true) |
+| Rig: Calibrate 1000 Hz tone (Attempt 1) | Live Focusrite ASIO | FAIL (index out of bounds) |
+| Rig: Calibrate 1000 Hz tone (Attempt 3) | Live Focusrite ASIO | FAIL (harmonics + dead button) |
+| Rig: Calibrate 1000 Hz tone (Attempt 4) | Live Focusrite ASIO | FAIL (clean sine + button works, but jitter on UI hover) |
+| Rig: Calibrate 1000 Hz tone (Attempt 5) | Live Focusrite ASIO with `BufferSize=4096` | PASS (clean sine, responsive button, no jitter) |
+| TASK 12.6 — clean tone + responsive UI | Rig session | PASS |
+| TASK 12.7 — noise Calibrate, clean stop on Done | Rig session (implicit — the UI-responsiveness fix resolves the previous noise-freeze as well) | PASS |
+| TASK 12.8 — no click at Discrete stimulus offset | Rig session (offset ramp now wired in) | PASS |
+| TASK 12.9 — no click at Continuous stimulus offset | Rig session | PASS |
+| TASK 12.10 — offline acoustic-logic regression | Not run this session | DEFERRED |
+
+**File size:** 66073 bytes (up from 55520 at v1.3 start of session; +10553 bytes reflects the new `streamAudio` function, `setNextDone`, expanded changelog, and inline rationale comments).
+
+**Known limitations / next steps:**
+- **TASK 11.5 (channel routing):** Still not formally verified. User did not report any obvious routing issues during the session but this should be checked deliberately in the next session (step through calibration, confirm each tone comes from the expected physical speaker position).
+- **TASK 12.10 (offline acoustic-logic regression):** Not re-run this session. The acoustic functions (`buildToneBuffer`, `buildNoiseBuffer`, `computePanAmplitudes`, `circularAngularError`) were not touched in v1.4, but a full regression run is cheap and worth doing for the record.
+- **TASK 10.2.3 Excel half:** CSV opens correctly in MATLAB's `readtable`; Excel verification not yet confirmed at the rig.
+- **Onset latency:** ~85 ms from `aPR(frame)` call to sound emerging. For localization with response times in hundreds of ms this is imperceptible; if sub-100 ms response-time measurement is ever needed, `CFG.frameSize` can be reduced (with corresponding loss of UI-stall headroom).
+- **`applyOnsetRamp` function is now unused** (ramp is computed inline in `streamAudio`). Left defined for symmetry with `applyOffsetRamp` and in case a caller ever needs it. The static-analysis warning is benign.
+
+**Next step:** User will provide feedback from additional rig time. When feedback arrives, address any new issues; then close out TASK 11.5 (channel routing), re-run 12.10, and move the project toward Phase 4 (Tutorial).
+
+---
+

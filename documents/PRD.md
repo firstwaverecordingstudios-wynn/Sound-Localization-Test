@@ -1,7 +1,7 @@
 # Product Requirement Document
 ## Sound Localization Test (SLT)
-**Version:** 1.5
-**Date:** 2026-04-15
+**Version:** 1.7
+**Date:** 2026-04-19
 **Author:** Claude (Anthropic) in collaboration with the project owner
 
 ---
@@ -29,6 +29,10 @@ Audio is routed via a multi-channel audio interface using MATLAB's **Audio Toolb
 
 **Driver requirement:** The audio interface must be accessed via its **ASIO driver**, not via Windows MME/DirectSound/WASAPI. Pro audio interfaces (e.g. Focusrite, RME, MOTU) typically expose only their first stereo pair through the Windows-side drivers; the ASIO driver is what surfaces all hardware output channels (≥6 in this case). `tryOpenAudio` enumerates devices via `getAudioDevices(audioPlayerRecorder)` and prefers any device whose name contains "ASIO". The manufacturer's ASIO driver must be installed; for class-compliant interfaces without a vendor ASIO driver, ASIO4ALL is a generic fallback.
 
+**Audio streaming model:** Looped playback is driven by a frame-streaming loop rather than a timer-based re-queue. On each trial, the program pumps fixed-size frames (4096 samples ≈ 85 ms at 48 kHz) into `audioPlayerRecorder` in a tight loop; the ASIO driver's internal buffering paces the loop naturally — each call to `aPR(frame)` blocks until the device is ready for the next frame. Between frames, `drawnow limitrate` services UI events (button clicks, keypresses) so the interface remains responsive throughout playback. This replaces an earlier timer-based re-queue strategy that proved incompatible with the short integer-cycle tone buffers (1–8 ms) used by this experiment.
+
+**Frame size / device buffer matching:** `audioPlayerRecorder` is constructed with `BufferSize = CFG.frameSize` so each `aPR(frame)` call corresponds to exactly one hardware callback. This gives ≈85 ms of per-callback runway — enough headroom that ordinary UI servicing (including uifigure mouse-hover events, which can take tens of milliseconds of CPU) cannot starve the device between frame dispatches. A smaller frame/buffer combination reduces onset latency but narrows the UI-stall tolerance; 4096 samples is the chosen compromise for a localization experiment where response times are hundreds of milliseconds and onset latency below 100 ms is imperceptible.
+
 ---
 
 ## 3. Acoustic & Signal Processing Context
@@ -54,6 +58,10 @@ buffer = sin(2 * pi * f * (0:N-1)' / Fs)
 If Fs/f is not an integer (e.g., 48000/750 = 64 exactly; 48000/125 = 384 exactly), use the exact value. All five specified frequencies (125, 250, 500, 750, 1000 Hz) divide evenly into 48000 Hz, so integer-cycle buffers are always achievable at this sample rate.
 
 The Hann window is applied separately as a short amplitude ramp (e.g., 10 ms) at the very first onset of the stimulus and at the moment the listener responds (final release), using a one-sided half-Hann envelope. It is never applied to the looping buffer itself.
+
+**Playback note:** The integer-cycle buffer is the smallest unit of audio that can loop seamlessly, but it is not the unit delivered to the audio device. The frame-streaming loop concatenates copies of the integer-cycle buffer into larger 4096-sample frames before dispatch (see §2). This does not affect the acoustic correctness of the loop — the integer-cycle guarantee means any two adjacent copies of the buffer splice together seamlessly — but it ensures the frame-streaming loop is delivering frames large enough for the ASIO driver to consume efficiently.
+
+**Ramp placement:** The Hann onset ramp is applied inside the frame-streaming loop to the FIRST dispatched frame only, not upstream to the loop buffer. Applying the ramp to the loop buffer would cause the ramp envelope to repeat at the loop rate (e.g. 1 kHz modulation on a 1000 Hz tone), producing audible harmonic distortion. The offset ramp is applied to ONE final tail frame dispatched after the listener responds — response time has already been captured by that point, so the ~85 ms fade-out is acoustic polish only and does not affect the timing measurement.
 
 ### 3.3 Gaussian Noise Loop Strategy — Crossfade Looping
 
@@ -128,6 +136,8 @@ Cycles through speakers 1–6. For each: displays active channel, plays stimulus
 
 All body text in the Calibration GUI is pure black for legibility.
 
+**Implementation note on the advance flag:** The "advance to next speaker" flag is stored in `calFig.UserData.nextDone` rather than in a local variable of the calibration function. MATLAB anonymous-function closures capture locals by value at creation time, so the streaming-loop termination predicate (which is an anonymous function reading the flag) would be frozen at the initial flag value for the life of the closure. Storing the flag on a handle object (the figure) makes it reference-semantic: both the button-click callback and the closure see the same current value. This is a general pattern for shared mutable state between UI callbacks and streaming loops.
+
 ### 4.3 Experiment Screen — Discrete Speakers Mode
 
 - Neutral/black background
@@ -156,7 +166,7 @@ Modal dialog on Start. Session filename: SubjectID_YYYYMMDD_HHMMSS.
 ## 5. Experiment Logic
 
 1. Subject ID collected.
-2. Trial loop: select location → build loop buffer → apply onset Hann ramp → play stimulus → start timer → listener responds → apply offset Hann ramp → stop audio → record data → countdown pause.
+2. Trial loop: select location → build loop buffer → build 6-channel output → apply onset Hann ramp → stream frames to device while polling for response → on response, apply offset Hann ramp to a final tail frame → stop streaming → record data → countdown pause.
 3. After final trial: compute and display results.
 
 ---
@@ -218,4 +228,4 @@ Two circular heatmap figures are generated: one for angular error, one for respo
 
 ---
 
-*Document status: PRD v1.5 reflects implemented behaviour. SLT.m is at v1.3. Pending hardware verification of channel routing (TASKS 11.5) and remaining live-session checks (8.7, 8.12, 9.x, 10.3.x).*
+*Document status: PRD v1.7 captures the final v1.4 audio streaming architecture as verified at the rig on 2026-04-19 — including the frame size / device buffer matching (§2), the in-streamAudio ramp placement (§3.2), and the `UserData`-based reference-semantic state for the calibration advance flag (§4.2). SLT.m is at v1.4 matching this spec. Sections 1–10 and 12 are complete and verified. Open items: TASK 11.5 (live-session channel-routing verification) and TASK 12.10 (offline acoustic-logic regression run). User reports "program runs well" and will provide additional feedback from further rig time.*

@@ -1,0 +1,14 @@
+# Sound Localization Test - Session Results
+# Subject: uhuih
+# Date: 2026-04-19 15:37:13
+# Stimulus: 125 Hz
+# Mode: Continuous Panning
+# Description: test
+# Mean Angular Error: 32.8 deg
+# Mean Response Time: 1.80 s
+TrialNumber,StimulusLocation,Response,AngularError_deg,ResponseTime_s
+1,278,249,29.0000,3.1073
+2,53,47,6.0000,2.1598
+3,71,11,60.0000,1.3085
+4,248,218,30.0000,1.0314
+5,60,21,39.0000,1.3923

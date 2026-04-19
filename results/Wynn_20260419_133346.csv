@@ -1,0 +1,12 @@
+# Sound Localization Test - Session Results
+# Subject: Wynn
+# Date: 2026-04-19 13:34:00
+# Stimulus: 125 Hz
+# Mode: Discrete Speakers
+# Description: Test
+# Accuracy: 0.0%
+# Mean Angular Error: 120.0 deg
+# Mean Response Time: 2.45 s
+TrialNumber,StimulusLocation,Response,AngularError_deg,ResponseTime_s
+1,5,2,180.0000,3.4103
+2,6,1,60.0000,1.4966
