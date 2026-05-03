@@ -1,6 +1,6 @@
 # TASKS — Sound Localization Test (SLT)
-**Version:** 1.7
-**Date:** 2026-04-19
+**Version:** 1.8
+**Date:** 2026-05-02
 
 All tasks must be completed in order. No task may begin before its predecessor is complete and verified.
 
@@ -189,7 +189,7 @@ This section captures a small device-enumeration fix to `tryOpenAudio` discovere
 - [x] **11.2** Implement device-selection policy: prefer any device whose name contains "ASIO" (case-insensitive); fall back to first non-"Default" device; fall back to silent mode.
 - [x] **11.3** Catch construction errors from `audioPlayerRecorder` and degrade gracefully to silent mode.
 - [x] **11.4** Verify the new code opens the Focusrite ASIO device with 6 output channels and releases cleanly. *(Functional test in MATLAB session: opened "Focusrite USB ASIO", 6 channels at 48 kHz, released without error.)*
-- [ ] **11.5** Verify in a live session that all 6 speakers play tones at the expected physical positions (i.e., MATLAB Channel 1 drives the speaker at 0°, Channel 2 drives 60°, etc.). If channel routing is wrong at the rig, decide whether to rewire or add a channel-remap config.
+- [x] **11.5** Verify in a live session that all 6 speakers play tones at the expected physical positions (i.e., MATLAB Channel 1 drives the speaker at 0°, Channel 2 drives 60°, etc.). If channel routing is wrong at the rig, decide whether to rewire or add a channel-remap config. *(Closed 2026-05-02. User verified channel routing at the rig across both rig sessions and reconfirmed during the v1.5 rig verification — all six channels drive their expected physical speaker positions, no remap needed.)*
 
 ---
 
@@ -218,4 +218,70 @@ Fix: replace timer-based re-queueing with a frame-streaming loop that pumps fixe
 - [x] **12.7** Verify at rig: calibrate with Gaussian noise — confirm the "Done" button works and audio stops cleanly on click. *(Verified at rig 2026-04-19 — the UI-responsiveness fix from Attempt 4 + 5 resolves the previous noise-freeze.)*
 - [x] **12.8** Verify at rig: short Discrete session; confirm no audible click at stimulus offset (offset ramp doing its job). *(Verified at rig 2026-04-19.)*
 - [x] **12.9** Verify at rig: short Continuous session — same. *(Verified at rig 2026-04-19.)*
-- [ ] **12.10** Re-run offline acoustic-logic tests (Tests 1–8 from 2026-04-13 LOG) to confirm no regression in buffer construction, panning law, or angular error math. *(Deferred — no audio-logic functions were modified in v1.4, so regression risk is low, but a formal run is cheap and worth doing for the record in a future session.)*
+- [x] **12.10** Re-run offline acoustic-logic tests (Tests 1–8 from 2026-04-13 LOG) to confirm no regression in buffer construction, panning law, or angular error math. *(Closed 2026-05-02 via `slt_regression_v15.m` — 29/29 tests pass, including all original Tests 1–8.)*
+
+
+---
+
+## Section 13 — Click Fix, Frame-Size Bump, and Continuous Panning Sweep (PRD v1.8, 2026-05-02)
+
+The second rig session surfaced two issues and motivated one new feature.
+
+- **(a) Audible click at stimulus offset.** Diagnosed by commenting out the inter-trial `stopAudio` call: with no `reset(aPR)`, the click disappears. Root cause: `audioPlayerRecorder`'s internal queue means `aPR(frame)` returns when the object accepts the frame, not when the hardware finishes playing it; the immediately-following `reset()` between trials cuts off the ramped tail frame mid-playback. Fix: dispatch one all-zeros 'silent pump' frame after the ramped tail frame so the ramped frame fully drains into hardware before `reset()` can clip it.
+- **(b) Audio stutter on UI hover.** Mouse-hover events on uifigure components occasionally stall the UI thread longer than the per-frame callback runway, starving the device. The operator already bumped `CFG.frameSize` 4096 → 8192 in interim adjustment, which reduced but did not eliminate the issue. Fix: bump again to 16384 samples (≈340 ms callback runway).
+- **(c) Continuous panning validation.** New optional Continuous Panning Sweep in Calibrate — described in PRD §4.6 — for perceptual end-to-end validation of the sine-law panning chain.
+
+All code changes require user approval before execution.
+
+### 13.1 — Silent pump fix for offset-ramp click
+
+- [x] **13.1.1** In `streamAudio`, after the ramped tail frame is dispatched, dispatch one additional all-zeros frame of shape `[CFG.frameSize, CFG.numChannels]`. Wrap in the same try/catch as the other dispatches. Add an inline comment explaining the queue-truncation rationale and pointing at PRD §3.2 "Silent-pump frame." *(Closed 2026-05-02. Note: shape uses `size(loopBuf, 2)` rather than `CFG.numChannels` for direct consistency with the loopBuf the function is operating on — same value, less indirection.)*
+- [x] **13.1.2** Verify at the rig: short Discrete and Continuous sessions confirm a smooth fade-out with no click on stimulus end. *(Closed 2026-05-02 at the rig.)*
+
+### 13.2 — Frame size bump for UI-stall headroom
+
+- [x] **13.2.1** Change `CFG.frameSize` from 8192 to 16384. (No other code change required — `tryOpenAudio` already constructs `audioPlayerRecorder` with `BufferSize = CFG.frameSize`.) *(Closed 2026-05-02.)*
+- [x] **13.2.2** Update the inline comment on `CFG.frameSize` to reflect the new ≈340 ms callback runway and the rationale (mouse-hover stall mitigation, second rig session). *(Closed 2026-05-02.)*
+- [x] **13.2.3** Verify at the rig: aggressive mouse hover over speaker buttons during stimulus playback produces no audible audio stutter. *(Closed 2026-05-02 at the rig.)*
+
+### 13.3 — Sweep Duration field on Intro GUI
+
+- [x] **13.3.1** Add a `uieditfield('numeric')` named "Sweep Duration (s)" to `launchIntroGUI`'s parameter panel. Default value 10. Same pink-on-white styling as the other numeric fields. *(Closed 2026-05-02. Label reads "Sweep duration (s):" matching the casing of the other field labels.)*
+- [x] **13.3.2** Layout: insert the new row at the bottom of the parameter panel, immediately after Description (and before the Start/Calibrate button row). This groups it visually with Calibrate, which is the only consumer of the field. Bump the input panel height (and the figure height if needed) to make room. *(Closed 2026-05-02. Figure 420→462 px, panel 250→292 px, existing rows shifted up 42 px each.)*
+- [x] **13.3.3** Pass the field's value into the calibration call via `calParams.sweepDurSec` (alongside the existing `stimIndex` / `stimLabel`). *(Closed 2026-05-02.)*
+- [x] **13.3.4** Validation: sweep duration must be a positive number. Reuse the same `uialert` pattern as `nTrials` / `pauseSec`. Enforce on Calibrate click only (Start does not use the field). *(Closed 2026-05-02.)*
+
+### 13.4 — Modal "Run sweep?" prompt after Speaker 6
+
+- [x] **13.4.1** In `runCalibration`, after the speaker loop falls through (i.e. user clicked "Done" on Speaker 6 OR closed the window) and before the final close call, present a `uiconfirm` modal: *"Run continuous panning sweep?"* with Yes / No buttons. Default to No (cancel-safe). *(Closed 2026-05-02. Modal also gated on `deviceOK` — silent mode skips the prompt since there is nothing meaningful to validate without audio.)*
+- [x] **13.4.2** On No (or window close): proceed to the existing close path — behavior unchanged from v1.4. *(Closed 2026-05-02.)*
+- [x] **13.4.3** On Yes: call new `runPanSweep(CFG, params, calFig, aPR, deviceOK)` (see 13.6). Audio device handle is reused — no need to re-open. After the sweep returns, fall through to the existing close path. *(Closed 2026-05-02. Final signature is `runPanSweep(CFG, params, calFig, lblSpeaker, lblInstr, btn, loopBuf, aPR)` — takes the existing UI handles directly so it can re-purpose them rather than re-discovering them by parent-and-tag traversal. `deviceOK` is implicitly true at the call site since the modal is gated on it.)*
+- [x] **13.4.4** Edge case: if the user closed the window mid-sequence (i.e. `~isvalid(calFig)`), skip the prompt entirely and go straight to the close path. The prompt is only shown when the user reaches it through normal completion. *(Closed 2026-05-02.)*
+
+### 13.5 — `streamPanSweep` function
+
+- [x] **13.5.1** New function `streamPanSweep(aPR, loopBuf, sweepDurSec, CFG, respGetter, degCallback)`. Mirrors `streamAudio`'s structure (frame-streaming loop, `drawnow limitrate` between frames, onset Hann ramp on the first frame, offset Hann ramp + silent pump at the end) but rebuilds the per-channel frame each iteration. *(Closed 2026-05-02.)*
+- [x] **13.5.2** Per-frame angle calculation: track cumulative samples dispatched; `currentDeg = 360 * (cumulativeSamples / totalSweepSamples)`. Synchronizes the angle advance exactly to the audio time base. *(Closed 2026-05-02.)*
+- [x] **13.5.3** Per-frame frame construction: take `frameN` samples from the cursor in the tiled `loopBuf`, then build a 6-channel frame via `monoFrame * computePanAmplitudes(currentDeg, CFG.speakerAngles)`. Apply the onset ramp to the first frame only (same pattern as `streamAudio`). *(Closed 2026-05-02.)*
+- [x] **13.5.4** Termination: sweep ends when `respGetter()` returns true (Stop Sweep clicked or window closed) OR when cumulative samples reach `totalSweepSamples` (natural completion). Both paths converge on the offset ramp + silent pump dispatch. *(Closed 2026-05-02. Added a refinement: the offset tail frame is built at the FINAL panning angle (`360 * min(cum/total, 1)`) rather than at the last full-frame angle. For natural completion this lands at exactly 360° (== 0° mod 360, Speaker 1) so the sweep's audible 0°→360° trajectory completes cleanly even though the main loop's last frame is at ~356°; for early stop it lands wherever the user pressed Stop Sweep.)*
+- [x] **13.5.5** After each frame dispatch, call `degCallback(currentDeg)` so the calibration UI can update its live readout. *(Closed 2026-05-02. Wrapped in a try/catch so a closed label cannot derail the streaming loop.)*
+
+### 13.6 — Wire the sweep into runCalibration
+
+- [x] **13.6.1** New helper `runPanSweep(CFG, params, calFig, aPR, deviceOK)`: replaces the calibration window's speaker-number label text with "Continuous Panning Sweep" and a live degree readout child label (e.g. *"Panning: 173°"*); changes the advance button text to "Stop Sweep" and rewires its callback to set `calFig.UserData.nextDone = true`. Resets `nextDone` to false before entering the sweep. *(Closed 2026-05-02. Implementation refinement: `runPanSweep` re-purposes the EXISTING instruction label `lbl_instr` ("Adjust volume...") as the live degree readout, rather than creating a new child label. The advance button is also re-used — its callback was already wired to `setNextDone(calFig)` in v1.4, so no rewire was needed; only the button text changes to "Stop Sweep".)*
+- [x] **13.6.2** Calls `streamPanSweep` with `respGetter = @() calFig.UserData.nextDone || ~isvalid(calFig)` and `degCallback = @(d) updateDegReadout(calFig, d)`. Silent-mode fallback: if `~deviceOK`, busy-poll `respGetter` with a `pause(0.05)` until terminal (no audio dispatched). *(Closed 2026-05-02. Silent-mode fallback proved unnecessary because the modal prompt itself is gated on `deviceOK` upstream — silent mode never reaches `runPanSweep`.)*
+- [x] **13.6.3** After `streamPanSweep` returns, no additional state restoration is needed since `runCalibration` proceeds straight to the window close. *(Closed 2026-05-02.)*
+
+### 13.7 — Verification
+
+- [x] **13.7.1** Launch Intro GUI; confirm the new Sweep Duration field renders correctly with default 10 and matches the styling of other numeric inputs. Confirm input validation rejects 0 / negative / non-numeric values when Calibrate is clicked. *(Closed 2026-05-02 at the rig.)*
+- [x] **13.7.2** Click Calibrate and answer No on the post-Speaker-6 prompt; confirm calibration closes cleanly (current behavior preserved). *(Closed 2026-05-02 at the rig.)*
+- [x] **13.7.3** Click Calibrate and answer Yes; confirm the sweep runs for the specified duration, the live degree readout updates smoothly, audio glides around all six speakers without audible jumps or holes at sector boundaries, and the Stop Sweep button aborts cleanly mid-sweep with no click. *(Closed 2026-05-02 at the rig.)*
+- [x] **13.7.4** Run a short Discrete session; confirm no click at stimulus offset (silent pump fix from 13.1). *(Closed 2026-05-02 at the rig.)*
+- [x] **13.7.5** Run a short Continuous session; same — no click. *(Closed 2026-05-02 at the rig.)*
+- [x] **13.7.6** During any of the above, hover the mouse aggressively over UI components during stimulus playback; confirm no audible audio stutter (frame-size bump from 13.2). *(Closed 2026-05-02 at the rig.)*
+- [x] **13.7.7** Re-run the offline acoustic-logic tests from TASK 12.10 (Tests 1–8 from 2026-04-13 LOG) once the v1.5 code lands; confirm no regressions in `buildToneBuffer`, `buildNoiseBuffer`, `computePanAmplitudes`, or `circularAngularError`. (Closes 12.10 as a side benefit.) *(Closed 2026-05-02 via `slt_regression_v15.m` — 29/29 pass, plus Test 9 verifying the v1.5 sweep angle math.)*
+
+---
+
+*Document status: TASKS v1.8 (2026-05-02) is now fully closed. Sections 1–10 and 12 are complete and verified per prior LOG entries; 11.5 and 12.10 both closed 2026-05-02. Section 13 (silent-pump click fix, frame-size bump 8192 → 16384, and the new Continuous Panning Sweep in Calibrate) is fully implemented and rig-verified — all 13.1.x through 13.7.x boxes closed 2026-05-02. The project has no open implementation work and is ready for Phase 4 (Tutorial). User will conduct an experiment session and report back before tutorial work begins.*

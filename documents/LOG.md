@@ -494,3 +494,117 @@ The nested `setDone` correctly mutated `nextDone` in the parent workspace. But t
 
 ---
 
+## 2026-05-02 — Second Rig Session Feedback & Section 13 Planning
+
+**Description:** User returned from a second rig session with three items: (a) audible click at stimulus offset instead of a smooth fade, (b) audio stutters during UI mouse-hover events, and (c) a request for ways to perceptually validate continuous panning. Operator had also made two interim adjustments to SLT.m without bumping the version (`CFG.frameSize` 4096 → 8192 to reduce stutter, `CFG.rampMs` 10 → 100 for a smoother feel) — confirmed in this session's read of the file.
+
+**Diagnoses (no code touched, design discussion only):**
+- *Click at offset*: suspected `reset(aPR)` in `stopAudio` cutting off the offset-ramp tail frame mid-playback. `audioPlayerRecorder`'s internal queue means `aPR(frame)` returns when the object accepts the frame, not when the hardware finishes playing it. Confirmed at the rig by commenting out the inter-trial `stopAudio` call — click disappeared. Fix: append a single all-zeros 'silent pump' frame after the ramped tail frame to occupy the queue slot that `reset()` would otherwise truncate.
+- *Stutter on UI hover*: mouse-hover events on uifigure components occasionally stall the UI thread longer than the per-frame callback runway, starving the device. The 8192-sample (~170 ms) interim setting reduced but did not eliminate the issue. Fix: bump frame size again to 16384 (~340 ms callback runway).
+- *Continuous panning validation*: discussed five approaches (math sweep, visual sanity plot, audible sweep at the rig, loopback measurement, behavioural self-test). User chose to implement the audible sweep as an optional yes/no prompt at the end of speaker calibration.
+
+**Decisions (recorded in PRD v1.8 / TASKS v1.8):**
+- Silent pump: one all-zeros frame after the ramped tail frame.
+- Frame size: bump 8192 → 16384.
+- Sweep configurability: new `Sweep Duration (s)` numeric field on the Intro GUI, default 10 s, placed at the bottom of the parameter panel after Description (groups visually with Calibrate, the only consumer).
+- Sweep architecture: separate `streamPanSweep` function rather than generalizing `streamAudio` — keeps the well-tested fixed-amplitude path untouched.
+- Sweep UI: reuse the calibration window. Speaker label → "Continuous Panning Sweep"; instruction label → live degree readout; advance button → "Stop Sweep". Modal `uiconfirm` after Speaker 6 with default-No for cancel-safety.
+- Edge case: if user closes the calibration window mid-sequence, skip the sweep prompt entirely.
+
+**Documents updated:**
+- PRD.md → v1.8: §2 frame-size and runway figures updated to 16384/340 ms; §3.2 ramp duration updated to 100 ms with a new "Silent-pump frame" subsection; §4.1 table adds Sweep Duration row and updates Calibrate description; §4.2 adds "Post-calibration sweep prompt" subsection; new §4.6 "Continuous Panning Sweep" specification; document-status footer rewritten.
+- TASKS.md → v1.8: new Section 13 with seven subsections (13.1 silent pump, 13.2 frame-size bump, 13.3 Sweep Duration field + validation, 13.4 modal prompt + edge case, 13.5 `streamPanSweep` function, 13.6 `runPanSweep` helper, 13.7 verification covering both fixes and the new feature plus a side-benefit close of the long-deferred 12.10 offline regression). Document-status footer added at end.
+
+**Tests run:** None — documentation only.
+
+**Next step:** User approved PRD v1.8 / TASKS v1.8 and authorized Phase 3. Implementation pending in subsequent LOG entry. Plan: archive `SLT.m` v1.4 → `archive/SLT_v1.4_2026-04-19.m`, then apply Section 13 as small targeted edits with `check_matlab_code` static analysis between each.
+
+---
+
+## 2026-05-02 — Section 13 Implementation (SLT.m v1.4 → v1.5) — COMPLETE
+
+**Description:** Implemented PRD v1.8 §2/§3.2/§4.1/§4.2/§4.6 (TASKS Section 13) at the desk — click fix, frame-size bump, and continuous panning sweep. Followed the Round 1 lesson from 2026-04-14: small targeted edits with `check_matlab_code` static analysis between each, no full-file rewrites.
+
+**Edits applied (in order):**
+1. Archived the pre-edit file as `archive/SLT_v1.4_2026-04-19.m` (full source preserved). Note: my first attempt at the archive write truncated the function bodies; immediately corrected by re-writing with the full v1.4 source. Archive file is now complete.
+2. Header: bumped v1.4 → v1.5, date 2026-04-19 → 2026-05-02; prepended a v1.5 changelog block enumerating Section 13 deltas. *Static check: clean.*
+3. CFG: `frameSize` 8192 → 16384; refreshed inline comment with the rationale (uifigure mouse-hover stalls observed at 8192). *Static check: clean.*
+4. `streamAudio`: appended one all-zeros silent-pump frame after the offset-ramp tail frame. *Static check: clean.*
+5. `launchIntroGUI`: bumped figure 420→462 px and input panel 250→292 px; shifted Stimulus / Trials / Pause / Mode / Description rows up by 42 px each; added new Sweep Duration row at y=32 (default 10 s). Added validation in `onCalibratePressed` (rejects 0 / negative / NaN with a `uialert`). Pass `sweepDurSec` into `calParams`. *Static check: clean.*
+6. `runCalibration`: assigned the existing "Adjust volume" label to a handle (`lbl_instr`) so `runPanSweep` can re-purpose it. Inserted a `uiconfirm` modal after Speaker 6 (default No, cancel-safe). On Yes, calls `runPanSweep` with the existing audio device handle, then runs `stopAudio`. Edge case: skips the prompt entirely if the calibration window was closed mid-sequence. *Static check: clean.*
+7. New SECTION 7 block at the end of the file with three helper functions: `runPanSweep` (re-purposes the calibration UI labels and button), `updateDegReadout` (per-frame label update wrapped in a try block to tolerate a closed label), and `streamPanSweep` (mirrors `streamAudio` structure but rebuilds the per-channel frame each iteration via `computePanAmplitudes`; per-frame angle synced to cumulative samples for clean audio/visual coherence; offset ramp built at the final panning angle for acoustically consistent fade-out; silent pump frame on exit). *Static check: clean.*
+
+**Tests run:**
+- `nargin('SLT')` = 0 — file parses cleanly in MATLAB.
+- 11/11 v1.5 marker checks pass (frame size, silent pump, sweep field, validation, modal text, three new function definitions, UI text, version header).
+- Offline acoustic-logic regression (slt_regression_v15.m, closes TASK 12.10 and 13.7.7): 29/29 tests pass:
+    - Test 1 (tone integer-cycle, 5 freqs): 5/5
+    - Test 2 (noise unit peak): PASS
+    - Test 3 (pan at 6 speaker angles): 6/6
+    - Test 4 (pan at sector midpoints, -3 dB law): 6/6
+    - Test 5 (constant-power across 1–360 deg): max err 2.22e-16 (machine epsilon)
+    - Test 6 (circular angular error, 7 cases): 7/7
+    - Test 7 (pan wrap 0° == 360°): PASS
+    - Test 8 (sector-1 monotonicity): PASS
+    - Test 9 (NEW: sweep angle math): 30 main-loop frames at 12.29°/step, range 0° – 356.35° (offset tail frame picks up the final 3.65° at exactly 360° via `min(cum/total, 1)` clamp — by design): PASS
+
+**Anomaly:** First call to `MATLAB:run_matlab_file` for `slt_regression_v15.m` timed out after 4 minutes (MCP server unresponsive); the same script run via `evaluate_matlab_code` returned in <1 second with all tests passing. Worth noting for future sessions: prefer `evaluate_matlab_code` over `run_matlab_file` if MATLAB MCP responsiveness is questionable.
+
+**Open verification (TASK 13.7), all rig-dependent, deferred to next rig session:**
+- 13.7.1 Sweep Duration field renders correctly + validation works
+- 13.7.2 No / window-close dismisses cleanly (current behaviour preserved)
+- 13.7.3 Sweep runs full duration with smooth audio glide; Stop Sweep aborts cleanly
+- 13.7.4 No click on Discrete-mode stimulus offset (silent pump verified at the rig)
+- 13.7.5 No click on Continuous-mode stimulus offset
+- 13.7.6 No audio stutter under aggressive UI mouse-hover (frame-size bump verified)
+
+**Closed in this session:**
+- TASK 12.10 (offline acoustic-logic regression) — closed via slt_regression_v15.m, 29/29 pass.
+- TASK 13.7.7 (re-run regression after v1.5) — closed via the same run.
+
+**Files modified this session:**
+- SLT.m (v1.4 → v1.5)
+- archive/SLT_v1.4_2026-04-19.m (created)
+- documents/PRD.md (v1.7 → v1.8)
+- documents/TASKS.md (v1.7 → v1.8; will mark closed boxes after this LOG entry)
+- documents/LOG.md (this entry)
+- slt_regression_v15.m (created — reusable for future regressions)
+
+**Next step:** User runs the rig-dependent verifications in TASK 13.7 (1–6). When all pass, mark them closed and the project is ready for Phase 4 (Tutorial). If any rig observation reveals a regression or surprise, treat it as a new round per MASTER_WORKFLOW (PRD/TASKS update first, then code).
+
+*This LOG entry will be updated in place with results as the implementation proceeds.*
+
+---
+
+## 2026-05-02 — Section 13 Rig Verification — ALL PASS — Phase 3 COMPLETE
+
+**Description:** User went to the rig immediately after the desk implementation and ran all six rig-dependent verifications from TASK 13.7. All passed. Channel routing (long-deferred TASK 11.5) was reconfirmed in the same session.
+
+**Verifications closed:**
+- 13.1.2 (smooth fade-out, no click on stimulus end — Discrete + Continuous): PASS
+- 13.2.3 (no audio stutter under aggressive UI mouse-hover): PASS
+- 13.7.1 (Sweep Duration field renders, validation rejects bad values): PASS
+- 13.7.2 (post-Speaker-6 No / window-close dismisses cleanly): PASS
+- 13.7.3 (sweep runs full duration with smooth glide; live degree readout updates; Stop Sweep aborts cleanly with no click): PASS
+- 13.7.4 (no click on Discrete-mode stimulus offset): PASS
+- 13.7.5 (no click on Continuous-mode stimulus offset): PASS
+- 13.7.6 (no audio stutter at 16384-sample frame size during aggressive UI hover): PASS
+- 11.5 (channel routing — MATLAB Ch.1 → Speaker 1 at 0°, etc.): PASS — also reconfirmed.
+
+**Implication:** Every silent-pump, frame-size, and panning-sweep design decision from this round is acoustically validated end-to-end. The diagnoses recorded earlier in this LOG (queue truncation as the click cause; UI-thread stalls as the stutter cause) are confirmed correct — the prescribed fixes work as specified.
+
+**Project state:**
+- TASKS v1.8 is fully closed. No open implementation work remains.
+- SLT.m v1.5 is the validated baseline.
+- Sections 1–10, 12, and 13 all complete and verified.
+- 11.5 and 12.10 both closed in this session.
+- Phase 3 (Implementation) of MASTER_WORKFLOW is complete.
+
+**Tests run this entry:** None executed by Claude — verifications were performed by the user at the rig.
+
+**Files modified this entry:**
+- documents/TASKS.md — closed boxes 13.1.2, 13.2.3, 13.7.1–6, and 11.5; updated final document-status footer.
+- documents/LOG.md — this entry.
+
+**Next step:** User will conduct an experiment session at the rig and report back. The next planned MASTER_WORKFLOW round is Phase 4 (Tutorial) — PRD already has hooks for tutorial content but no detailed tutorial spec yet, so that round will start with a planning conversation about tutorial format and scope before any PRD/TASKS edits.
+

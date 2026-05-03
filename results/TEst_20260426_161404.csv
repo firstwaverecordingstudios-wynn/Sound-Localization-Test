@@ -1,0 +1,15 @@
+# Sound Localization Test - Session Results
+# Subject: TEst
+# Date: 2026-04-26 16:14:23
+# Stimulus: 500 Hz
+# Mode: Discrete Speakers
+# Description: ANother Test
+# Accuracy: 60.0%
+# Mean Angular Error: 24.0 deg
+# Mean Response Time: 1.75 s
+TrialNumber,StimulusLocation,Response,AngularError_deg,ResponseTime_s
+1,2,1,60.0000,2.5223
+2,5,5,0.0000,1.4035
+3,4,4,0.0000,1.7355
+4,1,6,60.0000,1.5443
+5,1,1,0.0000,1.5426

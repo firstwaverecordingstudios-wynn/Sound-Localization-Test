@@ -6,46 +6,10 @@
 % measures the listener's ability to localize the sound source.
 %
 % Author  : Wynn Yang
-% Date    : 2026-05-02
-% Version : 1.5
+% Date    : 2026-04-19
+% Version : 1.4
 %
 % Changelog:
-%   v1.5 (2026-05-02) — Section 13: click fix, frame-size bump,
-%                       continuous panning sweep (PRD v1.8):
-%     - streamAudio now appends one all-zeros 'silent pump' frame after
-%       the ramped tail frame. audioPlayerRecorder's internal queue
-%       means aPR(frame) returns when the object accepts the frame, not
-%       when the hardware finishes playing it; without the pump, the
-%       inter-trial reset(aPR) call cuts off the ramped tail frame mid-
-%       playback and produces an audible click. The silent pump occupies
-%       the queue slot that reset() would otherwise truncate, so the
-%       ramped frame plays out in full. Diagnosed at the rig 2026-05-02
-%       by commenting out stopAudio: with no reset(), the click
-%       disappeared. See PRD v1.8 §3.2 "Silent-pump frame."
-%     - CFG.frameSize bumped 8192 → 16384 (~340 ms callback runway at
-%       48 kHz). The 8192 setting reduced UI-hover audio stutter but did
-%       not eliminate it; 16384 absorbs every stall observed in normal
-%       use. Onset latency cost (~340 ms) remains imperceptible relative
-%       to localization response times. Rolled in two operator-applied
-%       interim adjustments that preceded this version: CFG.frameSize
-%       4096 → 8192 and CFG.rampMs 10 → 100 ms.
-%     - New optional Continuous Panning Sweep in Calibrate (PRD §4.6):
-%       after the "Done" click on Speaker 6, a uiconfirm modal asks
-%       "Run continuous panning sweep?" (default No). On Yes, a new
-%       streamPanSweep function pans a virtual source from 0° to 360°
-%       clockwise over a user-configurable duration (default 10 s; new
-%       Sweep Duration field on the Intro GUI), recomputing
-%       computePanAmplitudes per frame to update the per-channel mix.
-%       The calibration window is reused: speaker label → "Continuous
-%       Panning Sweep", instruction label → live degree readout,
-%       advance button → "Stop Sweep". Provides a perceptual end-to-end
-%       check of the sine-law panning chain.
-%     - New helpers: streamPanSweep, runPanSweep, updateDegReadout. The
-%       "Adjust volume" label in runCalibration is now assigned to
-%       lbl_instr so runPanSweep can re-purpose it as the live readout.
-%     - Intro GUI: input panel and figure heights bumped to fit the new
-%       Sweep Duration row. Validation on Calibrate click rejects 0 /
-%       negative / non-numeric values.
 %   v1.4 (2026-04-19) — Audio streaming rewrite (PRD v1.6 §2, §3.2):
 %     - Replaced the timer-based re-queue strategy in playLooping with
 %       a frame-streaming loop (streamAudio). Fixed-size frames are
@@ -118,6 +82,17 @@
 %       Discrete experiment diagram and the results heatmap.
 %   v1.0 (2026-04-13) — Initial implementation.
 %
+% ARCHIVE NOTE: This file is a snapshot of SLT.m as it existed on
+% 2026-05-02 immediately before the v1.5 / Section 13 implementation.
+% The header above still self-identifies as v1.4 (2026-04-19), but the
+% operator made two interim adjustments before this snapshot:
+%   - CFG.frameSize bumped 4096 → 8192 (~170 ms callback runway) to
+%     reduce audio stutter from UI-thread stalls on uifigure mouse-hover
+%     events.
+%   - CFG.rampMs bumped 10 → 100 ms to give a perceptibly smoother onset
+%     attack and offset release.
+% Both interim adjustments are rolled into the v1.5 baseline going forward.
+%
 % Folder structure:
 %   Sound Localization Test/
 %   ├── SLT.m
@@ -134,23 +109,13 @@ CFG.numChannels   = 6;           % one channel per speaker
 CFG.rampMs        = 100;          % half-Hann onset/offset ramp duration (ms)
 CFG.xfadeMs       = 10;          % noise crossfade duration at loop point (ms)
 CFG.noiseDurSec   = 2;           % total noise buffer length before crossfade
-CFG.frameSize     = 8194;       % streaming frame size (samples) — ~340 ms at 48 kHz.
+CFG.frameSize     = 8192;        % streaming frame size (samples) — ~170 ms at 48 kHz.
                                  % Must match the device's BufferSize
                                  % (set in tryOpenAudio) so each aPR()
                                  % call dispatches exactly one hardware
                                  % callback's worth of audio. Larger
                                  % values give more UI-servicing headroom
-                                 % at the cost of onset latency. The
-                                 % 16384 value was chosen at the second
-                                 % rig session (2026-05-02) after 4096
-                                 % and 8192 each left audible stutter
-                                 % during aggressive uifigure mouse-hover
-                                 % activity — hover events occasionally
-                                 % stalled the UI thread longer than the
-                                 % shorter callback runways. ~340 ms
-                                 % onset latency is imperceptible at the
-                                 % response-time scales used here
-                                 % (hundreds of ms to seconds).
+                                 % at the cost of onset latency.
 
 % Speaker angles in degrees, clockwise from front (Speaker 1 = 0°)
 CFG.speakerAngles = [0, 60, 120, 180, 240, 300];
@@ -181,13 +146,13 @@ function launchIntroGUI(CFG)
 
 % ── Figure window ─────────────────────────────────────────────────────────
 fig = uifigure('Name', 'Sound Localization Test', ...
-    'Position', [200 150 520 462], ...
+    'Position', [200 150 520 420], ...
     'Color',    [0.84 0.92 0.97], ...   % light blue
     'Resize',   'off');
 
 % ── Header banner ─────────────────────────────────────────────────────────
 hdrPanel = uipanel(fig, ...
-    'Position',        [0 412 520 50], ...
+    'Position',        [0 370 520 50], ...
     'BackgroundColor', [0.10 0.48 0.54], ...  % teal
     'BorderType',      'none');
 uilabel(hdrPanel, ...
@@ -202,66 +167,54 @@ uilabel(hdrPanel, ...
 bodyColor = [0 0 0];
 
 inputPanel = uipanel(fig, ...
-    'Position',        [20 110 480 292], ...
+    'Position',        [20 110 480 250], ...
     'BackgroundColor', [1 1 1], ...
     'BorderType',      'line', ...
     'BorderColor',     [0.75 0.75 0.75]);
 
 % Stimulus Selection
 uilabel(inputPanel, 'Text', 'Stimulus:', ...
-    'Position', [20 242 120 22], 'FontSize', 12, 'FontColor', bodyColor);
+    'Position', [20 200 120 22], 'FontSize', 12, 'FontColor', bodyColor);
 stimItems = {'125 Hz','250 Hz','500 Hz','750 Hz','1000 Hz','Gaussian Noise'};
 dd_stim = uidropdown(inputPanel, ...
     'Items',           stimItems, ...
-    'Position',        [150 240 200 26], ...
+    'Position',        [150 198 200 26], ...
     'BackgroundColor', [0.98 0.84 0.84], ...
     'FontColor',       bodyColor);   % soft pink field, black text
 
 % Number of Trials
 uilabel(inputPanel, 'Text', 'Number of trials:', ...
-    'Position', [20 200 130 22], 'FontSize', 12, 'FontColor', bodyColor);
+    'Position', [20 158 130 22], 'FontSize', 12, 'FontColor', bodyColor);
 ef_trials = uieditfield(inputPanel, 'numeric', ...
     'Value',           50, ...
-    'Position',        [150 198 80 26], ...
+    'Position',        [150 156 80 26], ...
     'BackgroundColor', [0.98 0.84 0.84], ...
     'FontColor',       bodyColor);
 
 % Pause Time
 uilabel(inputPanel, 'Text', 'Pause time (s):', ...
-    'Position', [20 158 130 22], 'FontSize', 12, 'FontColor', bodyColor);
+    'Position', [20 116 130 22], 'FontSize', 12, 'FontColor', bodyColor);
 ef_pause = uieditfield(inputPanel, 'numeric', ...
     'Value',           2, ...
-    'Position',        [150 156 80 26], ...
+    'Position',        [150 114 80 26], ...
     'BackgroundColor', [0.98 0.84 0.84], ...
     'FontColor',       bodyColor);
 
 % Mode Selection
 uilabel(inputPanel, 'Text', 'Mode:', ...
-    'Position', [20 116 120 22], 'FontSize', 12, 'FontColor', bodyColor);
+    'Position', [20 74 120 22], 'FontSize', 12, 'FontColor', bodyColor);
 dd_mode = uidropdown(inputPanel, ...
     'Items',           {'Discrete Speakers','Continuous Panning'}, ...
-    'Position',        [150 114 200 26], ...
+    'Position',        [150 72 200 26], ...
     'BackgroundColor', [0.98 0.84 0.84], ...
     'FontColor',       bodyColor);
 
 % Description (used as figure subheader in results)
 uilabel(inputPanel, 'Text', 'Description:', ...
-    'Position', [20 74 120 22], 'FontSize', 12, 'FontColor', bodyColor);
+    'Position', [20 32 120 22], 'FontSize', 12, 'FontColor', bodyColor);
 ef_desc = uieditfield(inputPanel, 'text', ...
     'Value',           '', ...
-    'Position',        [150 72 290 26], ...
-    'BackgroundColor', [0.98 0.84 0.84], ...
-    'FontColor',       bodyColor);
-
-% Sweep Duration (PRD v1.8 §4.1) — used by the optional continuous
-% panning sweep launched from Calibrate (PRD v1.8 §4.6); ignored when
-% Start is pressed. Placed at the bottom of the panel since it feeds
-% Calibrate, not Start.
-uilabel(inputPanel, 'Text', 'Sweep duration (s):', ...
-    'Position', [20 32 130 22], 'FontSize', 12, 'FontColor', bodyColor);
-ef_sweep = uieditfield(inputPanel, 'numeric', ...
-    'Value',           10, ...
-    'Position',        [150 30 80 26], ...
+    'Position',        [150 30 290 26], ...
     'BackgroundColor', [0.98 0.84 0.84], ...
     'FontColor',       bodyColor);
 
@@ -321,21 +274,8 @@ uibutton(fig, ...
     end
 
     function onCalibratePressed()
-        % Sweep Duration is consumed by the optional continuous panning
-        % sweep launched from Calibrate (PRD v1.8 §4.6). Validate here
-        % rather than at field-edit time so the user can leave the field
-        % blank without nagging — they only need a valid value if they
-        % opt into the sweep.
-        sweepDurSec = ef_sweep.Value;
-        if isnan(sweepDurSec) || sweepDurSec <= 0
-            uialert(fig, 'Sweep duration must be a positive number.', ...
-                'Input Error');
-            return;
-        end
-
-        calParams.stimIndex   = dd_stim.ValueIndex;
-        calParams.stimLabel   = dd_stim.Value;
-        calParams.sweepDurSec = sweepDurSec;
+        calParams.stimIndex = dd_stim.ValueIndex;
+        calParams.stimLabel = dd_stim.Value;
         runCalibration(CFG, calParams);
     end
 
@@ -398,12 +338,7 @@ lbl_speaker = uilabel(calFig, ...
     'FontSize',            18, 'FontWeight', 'bold', ...
     'FontColor',           bodyColor);
 
-% lbl_instr is captured in a handle (rather than discarded as a one-shot
-% uilabel call) so that runPanSweep can re-purpose it as the live
-% panning-degree readout (PRD v1.8 §4.6). All v1.4 calibration behaviour
-% is unchanged — the label still reads "Adjust volume..." throughout the
-% speaker-check loop.
-lbl_instr = uilabel(calFig, ...
+uilabel(calFig, ...
     'Text',                'Adjust volume, then click Next Speaker.', ...
     'Position',            [30 95 340 28], ...
     'HorizontalAlignment', 'center', 'FontSize', 11, ...
@@ -466,29 +401,6 @@ for spk = 1:CFG.numChannels
 
     if deviceOK, stopAudio(aPR); end
     if ~isvalid(calFig), break; end
-end
-
-% ── Optional continuous panning sweep (PRD v1.8 §4.2 "Post-calibration
-% sweep prompt" + §4.6) ──
-% After the user clicks "Done" on Speaker 6, offer the sweep as a
-% perceptual end-to-end check of the panning chain. Only shown if the
-% calibration window is still open at this point — a mid-sequence window
-% close is treated as a stronger "I'm done" signal than a Speaker-6
-% completion, so we skip the prompt entirely in that case. Default-No
-% on the modal so a hurried Enter / Esc dismisses cleanly without
-% launching the sweep.
-if isvalid(calFig) && deviceOK
-    sel = uiconfirm(calFig, ...
-        'Run continuous panning sweep?', ...
-        'Calibration', ...
-        'Options', {'Yes', 'No'}, ...
-        'DefaultOption', 'No', ...
-        'CancelOption',  'No');
-    if strcmp(sel, 'Yes') && isvalid(calFig)
-        runPanSweep(CFG, params, calFig, lbl_speaker, lbl_instr, ...
-            btn_next, loopBuf, aPR);
-        if deviceOK, stopAudio(aPR); end
-    end
 end
 
 if deviceOK, release(aPR); end
@@ -1131,24 +1043,6 @@ try
 catch
     % Device already released — nothing to do.
 end
-
-% ── Silent-pump frame (PRD v1.8 §3.2 "Silent-pump frame") ──
-% audioPlayerRecorder's internal queue means aPR(tailFrame) above
-% returned when the OBJECT accepted the frame, not when the HARDWARE
-% finished playing it. The inter-trial reset(aPR) in stopAudio would
-% then truncate the queued tail frame mid-playback, producing an
-% audible click. Dispatching one all-zeros frame here occupies the
-% queue slot that reset() would otherwise truncate, so the ramped
-% frame plays out in full first; the silence that follows is what
-% gets cut off (inaudibly). Diagnosed at the rig 2026-05-02: with the
-% inter-trial stopAudio call commented out, the click disappears —
-% confirming the queue-truncation theory.
-silentFrame = zeros(frameN, size(loopBuf, 2));
-try
-    aPR(silentFrame);
-catch
-    % Device already released — nothing to do.
-end
 end % streamAudio
 
 
@@ -1637,176 +1531,3 @@ if isvalid(fig)
     fig.UserData.response = val;
 end
 end % assignResponse
-
-
-% =========================================================================
-%  SECTION 7 — CONTINUOUS PANNING SWEEP (PRD v1.8 §4.6)
-% =========================================================================
-%
-% Optional acoustic-validation routine launched from the post-Speaker-6
-% prompt in runCalibration. Pans a virtual source from 0° to 360°
-% clockwise over CFG-configurable seconds, recomputing the per-channel
-% amplitude vector each frame so the source glides smoothly across all
-% six speakers and through every sector boundary. The audible result is
-% the perceptual analog of a numeric sweep over computePanAmplitudes.
-
-function runPanSweep(CFG, params, calFig, lblSpeaker, lblInstr, btn, loopBuf, aPR)
-% Re-purposes the calibration window for the panning sweep:
-%   - lblSpeaker text → "Continuous Panning Sweep"
-%   - lblInstr   text → live degree readout (updated per frame)
-%   - btn        text → "Stop Sweep"; click sets calFig.UserData.nextDone
-%
-% On entry, audio device handle aPR is already open (reused from the
-% speaker check). On exit, audio has been stopped via the
-% offset-ramp + silent-pump dispatch inside streamPanSweep, but the
-% device handle remains open for runCalibration to release.
-
-% ── Re-purpose the UI ──
-if isvalid(lblSpeaker)
-    lblSpeaker.Text = 'Continuous Panning Sweep';
-end
-if isvalid(lblInstr)
-    lblInstr.Text = 'Panning: 0°';
-end
-if isvalid(btn)
-    btn.Text = 'Stop Sweep';
-end
-
-% Reset the advance flag so the existing setNextDone callback (wired to
-% the same button by runCalibration) cleanly signals an early stop.
-calFig.UserData.nextDone = false;
-
-% ── Run the sweep ──
-respGetter  = @() calFig.UserData.nextDone || ~isvalid(calFig);
-degCallback = @(d) updateDegReadout(lblInstr, d);
-streamPanSweep(aPR, loopBuf, params.sweepDurSec, CFG, ...
-    respGetter, degCallback);
-
-% No UI restoration needed: runCalibration's next action after this
-% returns is to close calFig.
-end % runPanSweep
-
-
-% ───────────────────────────────────────────────────────────────────────
-function updateDegReadout(lblInstr, currentDeg)
-% Updates the live panning-degree readout label. Called per frame from
-% streamPanSweep via degCallback. Rounded to whole degrees because the
-% per-frame angle steps are ~3° (10 s sweep at 16384-sample frames =
-% ~30 frames over 360°); fractional digits would suggest a precision
-% the visual update rate doesn't actually deliver.
-if isvalid(lblInstr)
-    lblInstr.Text = sprintf('Panning: %d°', round(currentDeg));
-end
-end % updateDegReadout
-
-
-% ───────────────────────────────────────────────────────────────────────
-function streamPanSweep(aPR, loopBuf, sweepDurSec, CFG, respGetter, degCallback)
-% Frame-streaming loop that pans a virtual source from 0° to 360°
-% clockwise over sweepDurSec seconds. Mirrors streamAudio's structure
-% (frame loop, drawnow limitrate between frames, onset Hann ramp on the
-% first frame, offset Hann ramp + silent pump at the end) but rebuilds
-% the per-channel frame each iteration via computePanAmplitudes — so
-% unlike streamAudio, the channel mix changes continuously across the
-% playback rather than being baked into a fixed outBuf.
-%
-% TERMINATION: the sweep ends when respGetter() returns true (the user
-% clicked Stop Sweep or closed the window) OR when cumulative samples
-% dispatched reach the total sweep length (natural completion). Both
-% paths converge on the offset-ramp tail + silent-pump dispatch.
-%
-% ANGLE/AUDIO SYNC: currentDeg is computed from cumulativeSamples /
-% totalSweepSamples (not from wall-clock time), so the angle advance is
-% perfectly synchronized to the audio time base regardless of any
-% UI-induced jitter in the frame loop.
-
-frameN = CFG.frameSize;
-loopN  = size(loopBuf, 1);
-
-% Tile the mono loop buffer wide enough to slice any frame-sized window
-% starting anywhere in [1, loopN] without bounds-checking. Same scheme
-% as streamAudio.
-nCopies = ceil((loopN + frameN) / loopN);
-tiled   = repmat(loopBuf, nCopies, 1);
-
-% Pre-computed onset ramp applied to the first dispatched frame only
-% (same rationale as streamAudio).
-rampN  = min(round(CFG.rampMs / 1000 * CFG.sampleRate), frameN);
-h      = hann(rampN * 2);
-onRamp = h(1:rampN);                                    % 0 → 1
-
-totalSweepSamples = max(round(sweepDurSec * CFG.sampleRate), frameN);
-
-cursor             = 1;     % index into `tiled`; kept in [1, loopN]
-cumulativeSamples  = 0;     % samples dispatched so far
-isFirst            = true;
-lastFrame          = false; % set when next frame would exceed total
-
-while ~respGetter() && ~lastFrame
-    % Compute the panning angle at the START of this frame (so degree 0
-    % is perceptually aligned with the very first sample of the sweep).
-    currentDeg = 360 * (cumulativeSamples / totalSweepSamples);
-    amps       = computePanAmplitudes(currentDeg, CFG.speakerAngles);
-
-    % Build the per-channel frame: mono slice * 1×6 amplitude row.
-    monoFrame = tiled(cursor : cursor + frameN - 1, :);
-    frame     = monoFrame * amps;
-
-    if isFirst
-        frame(1:rampN, :) = frame(1:rampN, :) .* onRamp;
-        isFirst = false;
-    end
-
-    try
-        aPR(frame);
-    catch
-        % Device released elsewhere — exit cleanly.
-        return;
-    end
-
-    % Advance bookkeeping.
-    cursor            = mod(cursor - 1 + frameN, loopN) + 1;
-    cumulativeSamples = cumulativeSamples + frameN;
-
-    % Live UI update (degree readout). Wrapped in a try so a closed
-    % label cannot derail the streaming loop.
-    try
-        degCallback(currentDeg);
-    catch
-    end
-
-    % If the next frame would overshoot the requested sweep length, we
-    % stop after this iteration. Using >= rather than > so a perfect
-    % multiple still terminates after exactly the requested samples.
-    if cumulativeSamples >= totalSweepSamples
-        lastFrame = true;
-    end
-
-    drawnow limitrate;
-end
-
-% ── Offset ramp: one final tail frame with applyOffsetRamp applied ──
-% Build the tail frame at the FINAL panning angle (rather than at the
-% angle of the last full frame) so the fade-out is acoustically
-% consistent with where the source ended up. For natural completion this
-% lands at exactly 360° (== 0° mod 360, Speaker 1); for early stop it
-% lands wherever the user pressed Stop Sweep.
-finalDeg     = 360 * min(cumulativeSamples / totalSweepSamples, 1);
-finalAmps    = computePanAmplitudes(finalDeg, CFG.speakerAngles);
-monoTail     = tiled(cursor : cursor + frameN - 1, :);
-tailFrame    = monoTail * finalAmps;
-tailFrame    = applyOffsetRamp(tailFrame, CFG.sampleRate, CFG.rampMs);
-try
-    aPR(tailFrame);
-catch
-end
-
-% ── Silent-pump frame (same rationale as streamAudio) ──
-% Without this, the runCalibration-side stopAudio call would truncate
-% the queued tail frame mid-playback, producing an audible click.
-silentFrame = zeros(frameN, CFG.numChannels);
-try
-    aPR(silentFrame);
-catch
-end
-end % streamPanSweep

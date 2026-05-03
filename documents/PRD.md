@@ -1,7 +1,7 @@
 # Product Requirement Document
 ## Sound Localization Test (SLT)
-**Version:** 1.7
-**Date:** 2026-04-19
+**Version:** 1.8
+**Date:** 2026-05-02
 **Author:** Claude (Anthropic) in collaboration with the project owner
 
 ---
@@ -29,9 +29,9 @@ Audio is routed via a multi-channel audio interface using MATLAB's **Audio Toolb
 
 **Driver requirement:** The audio interface must be accessed via its **ASIO driver**, not via Windows MME/DirectSound/WASAPI. Pro audio interfaces (e.g. Focusrite, RME, MOTU) typically expose only their first stereo pair through the Windows-side drivers; the ASIO driver is what surfaces all hardware output channels (≥6 in this case). `tryOpenAudio` enumerates devices via `getAudioDevices(audioPlayerRecorder)` and prefers any device whose name contains "ASIO". The manufacturer's ASIO driver must be installed; for class-compliant interfaces without a vendor ASIO driver, ASIO4ALL is a generic fallback.
 
-**Audio streaming model:** Looped playback is driven by a frame-streaming loop rather than a timer-based re-queue. On each trial, the program pumps fixed-size frames (4096 samples ≈ 85 ms at 48 kHz) into `audioPlayerRecorder` in a tight loop; the ASIO driver's internal buffering paces the loop naturally — each call to `aPR(frame)` blocks until the device is ready for the next frame. Between frames, `drawnow limitrate` services UI events (button clicks, keypresses) so the interface remains responsive throughout playback. This replaces an earlier timer-based re-queue strategy that proved incompatible with the short integer-cycle tone buffers (1–8 ms) used by this experiment.
+**Audio streaming model:** Looped playback is driven by a frame-streaming loop rather than a timer-based re-queue. On each trial, the program pumps fixed-size frames (16384 samples ≈ 340 ms at 48 kHz) into `audioPlayerRecorder` in a tight loop; the ASIO driver's internal buffering paces the loop naturally — each call to `aPR(frame)` blocks until the device is ready for the next frame. Between frames, `drawnow limitrate` services UI events (button clicks, keypresses) so the interface remains responsive throughout playback. This replaces an earlier timer-based re-queue strategy that proved incompatible with the short integer-cycle tone buffers (1–8 ms) used by this experiment.
 
-**Frame size / device buffer matching:** `audioPlayerRecorder` is constructed with `BufferSize = CFG.frameSize` so each `aPR(frame)` call corresponds to exactly one hardware callback. This gives ≈85 ms of per-callback runway — enough headroom that ordinary UI servicing (including uifigure mouse-hover events, which can take tens of milliseconds of CPU) cannot starve the device between frame dispatches. A smaller frame/buffer combination reduces onset latency but narrows the UI-stall tolerance; 4096 samples is the chosen compromise for a localization experiment where response times are hundreds of milliseconds and onset latency below 100 ms is imperceptible.
+**Frame size / device buffer matching:** `audioPlayerRecorder` is constructed with `BufferSize = CFG.frameSize` so each `aPR(frame)` call corresponds to exactly one hardware callback. The current value of 16384 samples gives ≈340 ms of per-callback runway. This is deliberately generous: the second rig session (2026-05-02) revealed that aggressive mouse-hover events on uifigure components could occasionally stall the UI thread longer than the previous ≈85 ms (4096-sample) callback runway, starving the device and producing audible audio stutter. The intermediate 8192-sample value reduced but did not eliminate the issue; 16384 samples appears to absorb every stall observed in normal use. The cost is onset latency (~340 ms from `aPR(frame)` call to sound emerging), which remains imperceptible relative to the hundreds-of-milliseconds-to-seconds response times measured in this experiment.
 
 ---
 
@@ -57,11 +57,13 @@ buffer = sin(2 * pi * f * (0:N-1)' / Fs)
 
 If Fs/f is not an integer (e.g., 48000/750 = 64 exactly; 48000/125 = 384 exactly), use the exact value. All five specified frequencies (125, 250, 500, 750, 1000 Hz) divide evenly into 48000 Hz, so integer-cycle buffers are always achievable at this sample rate.
 
-The Hann window is applied separately as a short amplitude ramp (e.g., 10 ms) at the very first onset of the stimulus and at the moment the listener responds (final release), using a one-sided half-Hann envelope. It is never applied to the looping buffer itself.
+The Hann window is applied separately as a short amplitude ramp (e.g., 100 ms — chosen for a perceptibly smooth onset attack and offset release without delaying response capture) at the very first onset of the stimulus and at the moment the listener responds (final release), using a one-sided half-Hann envelope. It is never applied to the looping buffer itself.
 
-**Playback note:** The integer-cycle buffer is the smallest unit of audio that can loop seamlessly, but it is not the unit delivered to the audio device. The frame-streaming loop concatenates copies of the integer-cycle buffer into larger 4096-sample frames before dispatch (see §2). This does not affect the acoustic correctness of the loop — the integer-cycle guarantee means any two adjacent copies of the buffer splice together seamlessly — but it ensures the frame-streaming loop is delivering frames large enough for the ASIO driver to consume efficiently.
+**Playback note:** The integer-cycle buffer is the smallest unit of audio that can loop seamlessly, but it is not the unit delivered to the audio device. The frame-streaming loop concatenates copies of the integer-cycle buffer into larger 16384-sample frames before dispatch (see §2). This does not affect the acoustic correctness of the loop — the integer-cycle guarantee means any two adjacent copies of the buffer splice together seamlessly — but it ensures the frame-streaming loop is delivering frames large enough for the ASIO driver to consume efficiently.
 
-**Ramp placement:** The Hann onset ramp is applied inside the frame-streaming loop to the FIRST dispatched frame only, not upstream to the loop buffer. Applying the ramp to the loop buffer would cause the ramp envelope to repeat at the loop rate (e.g. 1 kHz modulation on a 1000 Hz tone), producing audible harmonic distortion. The offset ramp is applied to ONE final tail frame dispatched after the listener responds — response time has already been captured by that point, so the ~85 ms fade-out is acoustic polish only and does not affect the timing measurement.
+**Ramp placement:** The Hann onset ramp is applied inside the frame-streaming loop to the FIRST dispatched frame only, not upstream to the loop buffer. Applying the ramp to the loop buffer would cause the ramp envelope to repeat at the loop rate (e.g. 1 kHz modulation on a 1000 Hz tone), producing audible harmonic distortion. The offset ramp is applied to ONE final tail frame dispatched after the listener responds — response time has already been captured by that point, so the ~100 ms fade-out (the offset ramp is applied to the last `rampMs` samples of the tail frame) is acoustic polish only and does not affect the timing measurement.
+
+**Silent-pump frame:** Immediately after the ramped tail frame, one additional all-zeros frame is dispatched. `audioPlayerRecorder`'s internal queue means an `aPR(frame)` call returns when the object accepts the frame, not when the hardware has finished playing it; without the silent pump, the inter-trial `reset(aPR)` call would cut off the ramped tail frame mid-playback, producing an audible click. The silent pump occupies the queue slot that `reset()` would otherwise truncate, so the ramped frame plays out in full before being followed by silence (which `reset()` truncates inaudibly). Diagnosed by commenting out the inter-trial `stopAudio` call: with no `reset()`, the click disappears — confirming queue truncation as the cause.
 
 ### 3.3 Gaussian Noise Loop Strategy — Crossfade Looping
 
@@ -124,8 +126,9 @@ Aesthetic: teal/cyan header banners, soft pink input fields, white panel backgro
 | Pause Time | Numeric input | Seconds |
 | Mode Selection | Dropdown | Discrete Speakers / Continuous Panning |
 | Description | Text field | Used as figure subheader in results |
+| Sweep Duration | Numeric input | Seconds (default 10). Used by the optional continuous panning sweep in Calibrate (§4.6); ignored otherwise. Placed at the bottom of the parameter panel since it feeds Calibrate, not Start. |
 | Start | Button | Launches Subject ID prompt then experiment |
-| Calibrate | Button | Launches calibration routine |
+| Calibrate | Button | Launches calibration routine, including an optional continuous panning sweep (§4.6) |
 
 ### 4.2 Calibration Routine
 
@@ -135,6 +138,8 @@ Cycles through speakers 1–6. For each: displays active channel, plays stimulus
 - **Speaker 6:** Once the tone begins playing through Speaker 6, the button label changes to "Done". Clicking "Done" stops audio and closes the Calibration GUI, returning control to the Intro GUI.
 
 All body text in the Calibration GUI is pure black for legibility.
+
+**Post-calibration sweep prompt:** After the "Done" click on Speaker 6 (or after the user closes the calibration window mid-sequence with at least one speaker checked), a modal `uiconfirm` dialog appears: *"Run continuous panning sweep?"* with **Yes** / **No** buttons (No is the default for cancel-safety). **No** closes the calibration window and returns to the Intro GUI — the v1.4 behavior. **Yes** launches the continuous panning sweep described in §4.6, reusing the calibration window for the sweep UI and the already-open audio device handle.
 
 **Implementation note on the advance flag:** The "advance to next speaker" flag is stored in `calFig.UserData.nextDone` rather than in a local variable of the calibration function. MATLAB anonymous-function closures capture locals by value at creation time, so the streaming-loop termination predicate (which is an anonymous function reading the flag) would be frozen at the initial flag value for the life of the closure. Storing the flag on a handle object (the figure) makes it reference-semantic: both the button-click callback and the closure see the same current value. This is a general pattern for shared mutable state between UI callbacks and streaming loops.
 
@@ -160,6 +165,18 @@ All body text in the Calibration GUI is pure black for legibility.
 ### 4.5 Subject ID Prompt
 
 Modal dialog on Start. Session filename: SubjectID_YYYYMMDD_HHMMSS.
+
+### 4.6 Continuous Panning Sweep
+
+Optional acoustic-validation routine triggered by **Yes** on the modal prompt at the end of speaker calibration (§4.2). Provides a perceptual end-to-end check that the sine-law panning chain (`computePanAmplitudes` → `buildOutputBuffer` → the audio device's six output channels → the physical speakers) is working as expected: a continuously-panned virtual source should be heard gliding smoothly around the listener with no audible jumps, holes, or amplitude pumping at sector boundaries.
+
+**Stimulus:** Whatever is selected in the Intro GUI's Stimulus dropdown (tone or noise) at the moment Calibrate was clicked. The same `loopBuf` used for the speaker check is reused — the sweep modulates only the per-channel amplitudes, not the underlying mono content.
+
+**Sweep trajectory:** One pass from 0° to 360°, clockwise (matching the speaker numbering: 0° → Speaker 1 front, 60° → Speaker 2 front-right, etc.). Total duration is set by the **Sweep Duration** field on the Intro GUI (default 10 s).
+
+**Per-frame amplitude update:** Unlike the rest of the streaming path, which builds a fixed-amplitude `outBuf` once per trial, the sweep recomputes `computePanAmplitudes(currentDeg, CFG.speakerAngles)` for each frame and rebuilds the per-channel output frame in the streaming loop. `currentDeg` is computed as a linear function of the cumulative samples dispatched divided by the total samples in the sweep, so the angle advance is exactly synchronized to the audio. At the default frame size (16384 samples ≈ 340 ms) and a 10 s sweep, that is ≈30 amplitude updates spread across the sweep — fine enough that the source glides rather than steps. Implemented as a separate `streamPanSweep` function rather than generalizing `streamAudio`, to keep the well-tested fixed-amplitude path unchanged.
+
+**UI:** Reuses the calibration window. The speaker-number label is replaced with *"Continuous Panning Sweep"* and a live degree readout (*"Panning: 173°"*); the advance button label changes to *"Stop Sweep"* and aborts the sweep early when clicked. After the sweep completes (or is stopped), the offset ramp + silent-pump dispatch (§3.2) runs as for any other stimulus, audio stops, the calibration window closes, and control returns to the Intro GUI.
 
 ---
 
@@ -228,4 +245,4 @@ Two circular heatmap figures are generated: one for angular error, one for respo
 
 ---
 
-*Document status: PRD v1.7 captures the final v1.4 audio streaming architecture as verified at the rig on 2026-04-19 — including the frame size / device buffer matching (§2), the in-streamAudio ramp placement (§3.2), and the `UserData`-based reference-semantic state for the calibration advance flag (§4.2). SLT.m is at v1.4 matching this spec. Sections 1–10 and 12 are complete and verified. Open items: TASK 11.5 (live-session channel-routing verification) and TASK 12.10 (offline acoustic-logic regression run). User reports "program runs well" and will provide additional feedback from further rig time.*
+*Document status: PRD v1.8 (2026-05-02) folds in three changes from the second rig session and one new feature: (a) the silent-pump frame appended after the offset ramp tail frame to prevent the inter-trial `reset(aPR)` from cutting off the ramped frame and producing an audible click (§3.2); (b) frame size bumped 4096 → 16384 (≈340 ms) to give more UI-stall headroom against uifigure mouse-hover events that exceeded the previous ≈85 ms callback runway (§2); (c) ramp duration set to 100 ms to match the operator's preferred onset attack and offset release feel (§3.2); and (d) a new optional Continuous Panning Sweep in Calibrate (§4.6), driven by a new Sweep Duration field on the Intro GUI (§4.1), as a perceptual end-to-end validation of the sine-law panning chain. SLT.m is currently at v1.4 (with operator-applied interim adjustments to `frameSize` and `rampMs`); the v1.5 implementation closes Section 13 of TASKS. Open items remain: TASK 11.5 (channel routing — user has informally verified at the rig) and TASK 12.10 (offline acoustic-logic regression).*

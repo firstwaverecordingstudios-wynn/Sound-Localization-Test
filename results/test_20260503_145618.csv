@@ -1,0 +1,14 @@
+# Sound Localization Test - Session Results
+# Subject: test
+# Date: 2026-05-03 14:56:37
+# Stimulus: 500 Hz
+# Mode: Continuous Panning
+# Description: test
+# Mean Angular Error: 63.0 deg
+# Mean Response Time: 1.65 s
+TrialNumber,StimulusLocation,Response,AngularError_deg,ResponseTime_s
+1,288,319,31.0000,2.3257
+2,264,222,42.0000,1.4471
+3,314,176,138.0000,1.7151
+4,2,53,51.0000,1.2319
+5,104,51,53.0000,1.5433

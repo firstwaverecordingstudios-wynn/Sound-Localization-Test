@@ -1,0 +1,15 @@
+# Sound Localization Test - Session Results
+# Subject: fwaceef
+# Date: 2026-04-26 16:17:54
+# Stimulus: 125 Hz
+# Mode: Discrete Speakers
+# Description: 
+# Accuracy: 0.0%
+# Mean Angular Error: 96.0 deg
+# Mean Response Time: 1.71 s
+TrialNumber,StimulusLocation,Response,AngularError_deg,ResponseTime_s
+1,3,2,60.0000,2.5205
+2,6,3,180.0000,2.4635
+3,3,1,120.0000,1.3112
+4,4,5,60.0000,0.8670
+5,2,1,60.0000,1.3782

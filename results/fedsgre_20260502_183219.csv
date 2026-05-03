@@ -1,0 +1,15 @@
+# Sound Localization Test - Session Results
+# Subject: fedsgre
+# Date: 2026-05-02 18:32:38
+# Stimulus: 500 Hz
+# Mode: Discrete Speakers
+# Description: 
+# Accuracy: 60.0%
+# Mean Angular Error: 24.0 deg
+# Mean Response Time: 1.84 s
+TrialNumber,StimulusLocation,Response,AngularError_deg,ResponseTime_s
+1,5,6,60.0000,2.6931
+2,1,1,0.0000,2.2318
+3,3,2,60.0000,1.3622
+4,6,6,0.0000,1.3631
+5,5,5,0.0000,1.5542
